@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -187,8 +188,72 @@ public sealed class MainForm : Form
             : defaultValue;
     }
 
+    private static string GetColor(JsonElement element, string property, string defaultValue)
+    {
+        var color = GetString(element, property, defaultValue).Trim();
+        if (color.StartsWith('#') && ( color.Length == 7 || color.Length == 4 ))
+        {
+            return color;
+        }
+
+        if (color.StartsWith("rgb(", StringComparison.OrdinalIgnoreCase) && color.EndsWith(')'))
+        {
+            var parts = color[4..^1].Split(',', StringSplitOptions.TrimEntries);
+            if (parts.Length == 3 && parts.All(part => int.TryParse(part, out var value) && value is >= 0 and <= 255))
+            {
+                return "#" + string.Concat(parts.Select(part => int.Parse(part).ToString("x2")));
+            }
+        }
+
+        return defaultValue;
+    }
+
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int dwAttribute, ref int pvAttribute, int cbAttribute);
+
+    private static ExecutionLog CloneLog(ExecutionLog log, bool includeOutput)
+    {
+        return new ExecutionLog
+        {
+            Id = log.Id,
+            StartedAt = log.StartedAt,
+            FinishedAt = log.FinishedAt,
+            Result = log.Result,
+            Type = log.Type,
+            Name = log.Name,
+            Configuration = log.Configuration,
+            CommandLine = log.CommandLine,
+            WorkingDirectory = log.WorkingDirectory,
+            ExitCode = log.ExitCode,
+            TerminalOutput = includeOutput ? log.TerminalOutput : "",
+            Steps = log.Steps.Select(step => new ExecutionStepLog
+            {
+                ScriptId = step.ScriptId,
+                ConfigurationId = step.ConfigurationId,
+                ScriptName = step.ScriptName,
+                ConfigurationName = step.ConfigurationName,
+                Result = step.Result,
+                ExitCode = step.ExitCode,
+                Output = includeOutput ? step.Output : ""
+            }).ToList()
+        };
+    }
+
+    private static void WriteJsonEntry<T>(ZipArchive archive, string entryName, T value)
+    {
+        var entry = archive.CreateEntry(entryName, CompressionLevel.Optimal);
+        using var stream = entry.Open();
+        JsonSerializer.Serialize(stream, value, JsonOptions);
+    }
+
+    private static void WriteTextEntry(ZipArchive archive, string entryName, string text)
+    {
+        var entry = archive.CreateEntry(entryName, CompressionLevel.Optimal);
+        using var writer = new StreamWriter(entry.Open());
+        writer.Write(text);
+    }
+
+    private static int ToColorRef(Color color) => color.R | ( color.G << 8 ) | ( color.B << 16 );
 
     private async Task InitializeWebViewAsync()
     {
@@ -245,11 +310,22 @@ public sealed class MainForm : Form
                 return BuildState(GetEnvTarget(payload));
 
             case "createScript":
-                _library.CreateScript(GetString(payload, "name"), GetString(payload, "content"), GetString(payload, "extension", ".ps1"));
+                var createdScript = _library.CreateScript(GetString(payload, "name"), GetString(payload, "content"), GetString(payload, "extension", ".ps1"));
+                createdScript.Color = GetColor(payload, "color", createdScript.Color);
+                createdScript.Icon = GetString(payload, "icon", createdScript.Icon);
+                _repository.UpsertScript(createdScript);
                 return BuildState(GetEnvTarget(payload));
 
             case "createScriptGroup":
-                _repository.UpsertScriptGroup(new ScriptGroup { Name = GetString(payload, "name"), Description = GetString(payload, "description", "") });
+                _repository.UpsertScriptGroup(new ScriptGroup { Name = GetString(payload, "name"), Description = GetString(payload, "description", ""), Color = GetColor(payload, "color", "#4fdbc8") });
+                return BuildState(GetEnvTarget(payload));
+
+            case "updateScriptGroup":
+                UpdateScriptGroup(payload);
+                return BuildState(GetEnvTarget(payload));
+
+            case "deleteScriptGroup":
+                _repository.DeleteScriptGroup(GetGuid(payload, "groupId"));
                 return BuildState(GetEnvTarget(payload));
 
             case "updateScript":
@@ -284,7 +360,15 @@ public sealed class MainForm : Form
                 return BuildState(GetEnvTarget(payload));
 
             case "createAutomationGroup":
-                _repository.UpsertAutomationGroup(new AutomationGroup { Name = GetString(payload, "name"), Description = GetString(payload, "description", "") });
+                _repository.UpsertAutomationGroup(new AutomationGroup { Name = GetString(payload, "name"), Description = GetString(payload, "description", ""), Color = GetColor(payload, "color", "#ffb783") });
+                return BuildState(GetEnvTarget(payload));
+
+            case "updateAutomationGroup":
+                UpdateAutomationGroup(payload);
+                return BuildState(GetEnvTarget(payload));
+
+            case "deleteAutomationGroup":
+                _repository.DeleteAutomationGroup(GetGuid(payload, "groupId"));
                 return BuildState(GetEnvTarget(payload));
 
             case "createAutomation":
@@ -327,6 +411,30 @@ public sealed class MainForm : Form
                 await DownloadAndRunInstallerAsync();
                 return BuildState(GetEnvTarget(payload));
 
+            case "exportBackup":
+                ExportBackup();
+                return BuildState(GetEnvTarget(payload));
+
+            case "importBackup":
+                ImportBackup();
+                return BuildState(GetEnvTarget(payload));
+
+            case "saveCheatSheetGroup":
+                SaveCheatSheetGroup(payload);
+                return BuildState(GetEnvTarget(payload));
+
+            case "deleteCheatSheetGroup":
+                _repository.DeleteCheatSheetGroup(GetGuid(payload, "groupId"));
+                return BuildState(GetEnvTarget(payload));
+
+            case "saveCheatSheetEntry":
+                SaveCheatSheetEntry(payload);
+                return BuildState(GetEnvTarget(payload));
+
+            case "deleteCheatSheetEntry":
+                _repository.DeleteCheatSheetEntry(GetGuid(payload, "entryId"));
+                return BuildState(GetEnvTarget(payload));
+
             default:
                 throw new InvalidOperationException($"Unknown bridge action: {action}");
         }
@@ -342,6 +450,8 @@ public sealed class MainForm : Form
             scriptGroups = _repository.GetScriptGroups(),
             automationGroups = _repository.GetAutomationGroups(),
             automations,
+            cheatSheetGroups = _repository.GetCheatSheetGroups(),
+            cheatSheetEntries = _repository.GetCheatSheetEntries(),
             logs = _repository.GetLogs(300),
             settings = _repository.GetSettings(),
             environmentTarget = envTarget.ToString(),
@@ -372,11 +482,134 @@ public sealed class MainForm : Form
         }
     }
 
+    private void ExportBackup()
+    {
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Export ScriptManager backup",
+            Filter = "ScriptManager backup|*.zip",
+            FileName = $"scriptmanager-backup-{DateTime.Now:yyyyMMdd-HHmmss}.zip",
+            OverwritePrompt = true
+        };
+
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        if (File.Exists(dialog.FileName))
+        {
+            File.Delete(dialog.FileName);
+        }
+
+        var scripts = _repository.GetScripts();
+        var logs = _repository.GetLogs(int.MaxValue);
+        var manifest = new BackupManifest(
+            ExportedAt: DateTime.UtcNow,
+            AppVersion: GetApplicationVersion(),
+            Settings: _repository.GetSettings(),
+            ScriptGroups: _repository.GetScriptGroups(),
+            Scripts: scripts,
+            AutomationGroups: _repository.GetAutomationGroups(),
+            Automations: _repository.GetAutomations(),
+            CheatSheetGroups: _repository.GetCheatSheetGroups(),
+            CheatSheetEntries: _repository.GetCheatSheetEntries(),
+            Logs: logs.Select(log => CloneLog(log, includeOutput: false)).ToList());
+
+        using var archive = ZipFile.Open(dialog.FileName, ZipArchiveMode.Create);
+        WriteJsonEntry(archive, "scriptmanager-backup.json", manifest);
+
+        foreach (var script in scripts.Where(script => File.Exists(script.LocalPath)))
+        {
+            var extension = Path.GetExtension(script.LocalPath);
+            archive.CreateEntryFromFile(script.LocalPath, $"scripts/{script.Id:N}{extension}", CompressionLevel.Optimal);
+        }
+
+        foreach (var log in logs)
+        {
+            WriteTextEntry(archive, $"logs/{log.Id:N}.txt", log.TerminalOutput ?? "");
+        }
+    }
+
+    private void ImportBackup()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Import ScriptManager backup",
+            Filter = "ScriptManager backup|*.zip|All files|*.*",
+            Multiselect = false
+        };
+
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        using var archive = ZipFile.OpenRead(dialog.FileName);
+        var manifestEntry = archive.GetEntry("scriptmanager-backup.json") ?? throw new InvalidOperationException("Backup manifest was not found.");
+        using var manifestStream = manifestEntry.Open();
+        var manifest = JsonSerializer.Deserialize<BackupManifest>(manifestStream, JsonOptions) ?? throw new InvalidOperationException("Backup manifest could not be read.");
+
+        _repository.SaveSettings(manifest.Settings);
+        foreach (var group in manifest.ScriptGroups)
+        {
+            _repository.UpsertScriptGroup(group);
+        }
+
+        foreach (var script in manifest.Scripts)
+        {
+            var scriptEntry = archive.Entries.FirstOrDefault(entry => entry.FullName.StartsWith($"scripts/{script.Id:N}", StringComparison.OrdinalIgnoreCase));
+            if (scriptEntry is not null)
+            {
+                var destination = Path.Combine(_paths.Scripts, Path.GetFileName(scriptEntry.FullName));
+                scriptEntry.ExtractToFile(destination, overwrite: true);
+                script.LocalPath = destination;
+            }
+
+            _repository.UpsertScript(script);
+        }
+
+        foreach (var group in manifest.AutomationGroups)
+        {
+            _repository.UpsertAutomationGroup(group);
+        }
+
+        foreach (var automation in manifest.Automations)
+        {
+            _repository.UpsertAutomation(automation);
+        }
+
+        foreach (var group in manifest.CheatSheetGroups)
+        {
+            _repository.UpsertCheatSheetGroup(group);
+        }
+
+        foreach (var entry in manifest.CheatSheetEntries)
+        {
+            _repository.UpsertCheatSheetEntry(entry);
+        }
+
+        var existingLogIds = _repository.GetLogs(int.MaxValue).Select(log => log.Id).ToHashSet();
+        foreach (var log in manifest.Logs.Where(log => !existingLogIds.Contains(log.Id)))
+        {
+            var logEntry = archive.GetEntry($"logs/{log.Id:N}.txt");
+            if (logEntry is not null)
+            {
+                using var reader = new StreamReader(logEntry.Open());
+                log.TerminalOutput = reader.ReadToEnd();
+            }
+
+            _repository.AddLog(log);
+        }
+    }
+
     private void UpdateScript(JsonElement payload)
     {
         var script = _repository.GetScript(GetGuid(payload, "scriptId")) ?? throw new InvalidOperationException("Script not found.");
         script.Name = GetString(payload, "name", script.Name);
         script.Description = GetString(payload, "description", script.Description);
+        script.Icon = GetString(payload, "icon", script.Icon);
+        script.Color = GetColor(payload, "color", script.Color);
         if (payload.TryGetProperty("groupId", out var groupValue) && Guid.TryParse(groupValue.GetString(), out var groupId))
         {
             var group = _repository.GetScriptGroups().FirstOrDefault(x => x.Id == groupId);
@@ -387,6 +620,15 @@ public sealed class MainForm : Form
             }
         }
         _repository.UpsertScript(script);
+    }
+
+    private void UpdateScriptGroup(JsonElement payload)
+    {
+        var group = _repository.GetScriptGroups().FirstOrDefault(x => x.Id == GetGuid(payload, "groupId")) ?? throw new InvalidOperationException("Script group not found.");
+        group.Name = GetString(payload, "name", group.Name);
+        group.Description = GetString(payload, "description", group.Description);
+        group.Color = GetColor(payload, "color", group.Color);
+        _repository.UpsertScriptGroup(group);
     }
 
     private string GetScriptCode(Guid scriptId)
@@ -457,6 +699,8 @@ public sealed class MainForm : Form
             Description = GetString(payload, "description", ""),
             GroupId = group.Id,
             Group = group.Name,
+            Icon = GetString(payload, "icon", "account_tree"),
+            Color = GetColor(payload, "color", "#8083ff"),
             CreatedAt = DateTime.UtcNow,
             LastModifiedAt = DateTime.UtcNow
         });
@@ -467,6 +711,8 @@ public sealed class MainForm : Form
         var automation = _repository.GetAutomation(GetGuid(payload, "automationId")) ?? throw new InvalidOperationException("Automation not found.");
         automation.Name = GetString(payload, "name", automation.Name);
         automation.Description = GetString(payload, "description", automation.Description);
+        automation.Icon = GetString(payload, "icon", automation.Icon);
+        automation.Color = GetColor(payload, "color", automation.Color);
         if (payload.TryGetProperty("groupId", out var groupValue) && Guid.TryParse(groupValue.GetString(), out var groupId))
         {
             var group = _repository.GetAutomationGroups().FirstOrDefault(x => x.Id == groupId);
@@ -478,6 +724,38 @@ public sealed class MainForm : Form
         }
         automation.LastModifiedAt = DateTime.UtcNow;
         _repository.UpsertAutomation(automation);
+    }
+
+    private void UpdateAutomationGroup(JsonElement payload)
+    {
+        var group = _repository.GetAutomationGroups().FirstOrDefault(x => x.Id == GetGuid(payload, "groupId")) ?? throw new InvalidOperationException("Automation group not found.");
+        group.Name = GetString(payload, "name", group.Name);
+        group.Description = GetString(payload, "description", group.Description);
+        group.Color = GetColor(payload, "color", group.Color);
+        _repository.UpsertAutomationGroup(group);
+    }
+
+    private void SaveCheatSheetGroup(JsonElement payload)
+    {
+        var id = GetOptionalGuid(payload, "groupId") ?? Guid.NewGuid();
+        var group = _repository.GetCheatSheetGroup(id) ?? new CheatSheetGroup { Id = id };
+        group.Name = GetString(payload, "name", group.Name);
+        group.Color = GetColor(payload, "color", group.Color);
+        group.Icon = GetString(payload, "icon", group.Icon);
+        _repository.UpsertCheatSheetGroup(group);
+    }
+
+    private void SaveCheatSheetEntry(JsonElement payload)
+    {
+        var id = GetOptionalGuid(payload, "entryId") ?? Guid.NewGuid();
+        var entry = _repository.GetCheatSheetEntry(id) ?? new CheatSheetEntry { Id = id, CreatedAt = DateTime.UtcNow };
+        entry.GroupId = GetGuid(payload, "groupId");
+        entry.Name = GetString(payload, "name", entry.Name);
+        entry.Description = GetString(payload, "description", entry.Description);
+        entry.Code = GetString(payload, "code", entry.Code);
+        entry.Color = GetColor(payload, "color", entry.Color);
+        entry.LastModifiedAt = DateTime.UtcNow;
+        _repository.UpsertCheatSheetEntry(entry);
     }
 
     private void AddAutomationStep(JsonElement payload)
@@ -544,8 +822,6 @@ public sealed class MainForm : Form
             DwmSetWindowAttribute(Handle, DwmWindowAttributeTextColor, ref textColor, sizeof(int));
         }
     }
-
-    private static int ToColorRef(Color color) => color.R | (color.G << 8) | (color.B << 16);
 
     private void RestoreWindowPlacement(AppSettings settings)
     {
@@ -688,4 +964,16 @@ public sealed class MainForm : Form
     {
         public static UpdateInfo NoInfo(string? message) => new("NOINFO", null, null, DateTime.UtcNow, message);
     }
+
+    private sealed record BackupManifest(
+        DateTime ExportedAt,
+        string AppVersion,
+        AppSettings Settings,
+        IReadOnlyList<ScriptGroup> ScriptGroups,
+        IReadOnlyList<ScriptRecord> Scripts,
+        IReadOnlyList<AutomationGroup> AutomationGroups,
+        IReadOnlyList<AutomationRecord> Automations,
+        IReadOnlyList<CheatSheetGroup> CheatSheetGroups,
+        IReadOnlyList<CheatSheetEntry> CheatSheetEntries,
+        IReadOnlyList<ExecutionLog> Logs);
 }

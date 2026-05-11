@@ -40,6 +40,24 @@ public sealed class LiteDbScriptRepository : IScriptRepository
 
     public void AddLog(ExecutionLog log) => _database.GetCollection<ExecutionLog>("logs").Insert(log);
 
+    public IReadOnlyList<CheatSheetGroup> GetCheatSheetGroups() =>
+        _database.GetCollection<CheatSheetGroup>("cheatSheetGroups").FindAll().OrderBy(x => x.Name).ToList();
+
+    public CheatSheetGroup? GetCheatSheetGroup(Guid id) => _database.GetCollection<CheatSheetGroup>("cheatSheetGroups").FindById(id);
+    public void UpsertCheatSheetGroup(CheatSheetGroup group) => _database.GetCollection<CheatSheetGroup>("cheatSheetGroups").Upsert(group);
+    public void DeleteCheatSheetGroup(Guid id)
+    {
+        _database.GetCollection<CheatSheetEntry>("cheatSheetEntries").DeleteMany(x => x.GroupId == id);
+        _database.GetCollection<CheatSheetGroup>("cheatSheetGroups").Delete(id);
+    }
+
+    public IReadOnlyList<CheatSheetEntry> GetCheatSheetEntries() =>
+        _database.GetCollection<CheatSheetEntry>("cheatSheetEntries").FindAll().OrderBy(x => x.Name).ToList();
+
+    public CheatSheetEntry? GetCheatSheetEntry(Guid id) => _database.GetCollection<CheatSheetEntry>("cheatSheetEntries").FindById(id);
+    public void UpsertCheatSheetEntry(CheatSheetEntry entry) => _database.GetCollection<CheatSheetEntry>("cheatSheetEntries").Upsert(entry);
+    public void DeleteCheatSheetEntry(Guid id) => _database.GetCollection<CheatSheetEntry>("cheatSheetEntries").Delete(id);
+
     public AppSettings GetSettings()
     {
         var collection = _database.GetCollection<AppSettings>("settings");
@@ -66,6 +84,11 @@ public sealed class LiteDbScriptRepository : IScriptRepository
         if (!GetAutomationGroups().Any())
         {
             UpsertAutomationGroup(new AutomationGroup { Name = "Default", Description = "Ungrouped automations" });
+        }
+
+        if (!GetCheatSheetGroups().Any())
+        {
+            UpsertCheatSheetGroup(new CheatSheetGroup { Name = "General", Color = "#4fdbc8" });
         }
 
         SaveSettings(GetSettings());

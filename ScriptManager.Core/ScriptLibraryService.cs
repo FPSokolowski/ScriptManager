@@ -28,11 +28,11 @@ public sealed class ScriptLibraryService
             Name = string.IsNullOrWhiteSpace(name) ? Path.GetFileNameWithoutExtension(sourcePath) : name.Trim(),
             Description = "",
             OriginalPath = sourcePath,
-            LocalPath = AllocateLocalPath(sourcePath),
             AddedAt = DateTime.UtcNow,
             LastModifiedAt = File.GetLastWriteTimeUtc(sourcePath),
             Status = ScriptSyncStatus.Current
         };
+        script.LocalPath = AllocateLocalPath(script.Id, sourcePath);
 
         File.Copy(sourcePath, script.LocalPath, overwrite: true);
         script.Configurations.Add(new ScriptConfiguration
@@ -64,9 +64,6 @@ public sealed class ScriptLibraryService
             safeName = "script";
         }
 
-        var localPath = Path.Combine(_paths.Scripts, $"{safeName}-{Guid.NewGuid():N}{extension}");
-        File.WriteAllText(localPath, content);
-
         var script = new ScriptRecord
         {
             GroupId = group.Id,
@@ -74,11 +71,12 @@ public sealed class ScriptLibraryService
             Name = name.Trim(),
             Description = "Created inside ScriptManager",
             OriginalPath = "",
-            LocalPath = localPath,
             AddedAt = DateTime.UtcNow,
-            LastModifiedAt = File.GetLastWriteTimeUtc(localPath),
             Status = ScriptSyncStatus.Current
         };
+        script.LocalPath = Path.Combine(_paths.Scripts, $"{script.Id:N}-{safeName}{extension}");
+        File.WriteAllText(script.LocalPath, content);
+        script.LastModifiedAt = File.GetLastWriteTimeUtc(script.LocalPath);
         script.Configurations.Add(new ScriptConfiguration
         {
             Name = "Default",
@@ -175,10 +173,16 @@ public sealed class ScriptLibraryService
         return group;
     }
 
-    private string AllocateLocalPath(string sourcePath)
+    private string AllocateLocalPath(Guid scriptId, string sourcePath)
     {
         var extension = Path.GetExtension(sourcePath);
-        return Path.Combine(_paths.Scripts, $"{Path.GetFileNameWithoutExtension(sourcePath)}-{Guid.NewGuid():N}{extension}");
+        var sourceName = SanitizeFileName(Path.GetFileNameWithoutExtension(sourcePath));
+        if (string.IsNullOrWhiteSpace(sourceName))
+        {
+            sourceName = "script";
+        }
+
+        return Path.Combine(_paths.Scripts, $"{scriptId:N}-{sourceName}{extension}");
     }
 
     private void BackupLocalScript(ScriptRecord script)

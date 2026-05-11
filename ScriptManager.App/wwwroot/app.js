@@ -8,13 +8,63 @@ const topActionsElement = document.getElementById("top-actions");
 const primaryActionsElement = document.getElementById("page-primary-actions");
 const searchShellElement = document.getElementById("toolbar-search-shell");
 const searchInputElement = document.getElementById("toolbar-search-input");
+const cheatSearchShellElement = document.getElementById("cheat-search-shell");
+const cheatSearchGroupElement = document.getElementById("cheat-search-group");
+const cheatSearchInputElement = document.getElementById("cheat-search-input");
 const sidebarVersionElement = document.getElementById("sidebar-version");
+const colorPalette = ["#4fdbc8", "#c0c1ff", "#ffb783", "#f472b6", "#22c55e", "#38bdf8", "#facc15", "#fb7185", "#a78bfa", "#34d399", "#f97316", "#e879f9", "#2dd4bf", "#60a5fa"];
+// Google Material Symbols are free to use under the Apache License 2.0.
+const iconCatalog = [
+  "terminal_2", "code", "data_object", "play_arrow", "settings", "build", "bolt", "rocket_launch", "account_tree", "schema", "hub", "lan", "cloud", "database", "storage", "folder", "inventory_2", "book_ribbon", "article", "description", "fact_check", "check_circle", "warning", "error", "security", "lock", "key", "shield", "sync", "autorenew", "schedule", "timer", "memory", "speed", "monitoring", "analytics", "search", "edit", "delete", "download", "upload", "swap_vert", "box_add", "add_circle", "coffee_maker", "perm_data_setting", "browse_activity",
+  "brand:linux", "brand:ubuntu", "brand:debian", "brand:fedora", "brand:arch", "brand:alpine", "brand:kali", "brand:redhat", "brand:opensuse", "brand:mint", "brand:windows", "brand:powershell", "brand:wsl", "brand:cmd", "brand:bash", "brand:zsh", "brand:fish", "brand:macos", "brand:homebrew", "brand:chocolatey", "brand:npm", "brand:node", "brand:yarn", "brand:pnpm", "brand:git", "brand:github", "brand:gitlab", "brand:bitbucket", "brand:docker", "brand:kubernetes", "brand:python", "brand:nuget", "brand:dotnet", "brand:winget", "brand:scoop"
+];
+const brandIconLabels = {
+  "brand:linux": "LNX",
+  "brand:ubuntu": "UBU",
+  "brand:debian": "DEB",
+  "brand:fedora": "FED",
+  "brand:arch": "ARC",
+  "brand:alpine": "ALP",
+  "brand:kali": "KLI",
+  "brand:redhat": "RHT",
+  "brand:opensuse": "SUS",
+  "brand:mint": "MNT",
+  "brand:windows": "WIN",
+  "brand:powershell": "PS",
+  "brand:wsl": "WSL",
+  "brand:cmd": "CMD",
+  "brand:bash": "BSH",
+  "brand:zsh": "ZSH",
+  "brand:fish": "FSH",
+  "brand:macos": "MAC",
+  "brand:homebrew": "BRW",
+  "brand:chocolatey": "CHO",
+  "brand:npm": "NPM",
+  "brand:node": "NOD",
+  "brand:yarn": "YRN",
+  "brand:pnpm": "PNP",
+  "brand:git": "GIT",
+  "brand:github": "GH",
+  "brand:gitlab": "GL",
+  "brand:bitbucket": "BB",
+  "brand:docker": "DKR",
+  "brand:kubernetes": "K8S",
+  "brand:python": "PY",
+  "brand:nuget": "NUG",
+  "brand:dotnet": ".NET",
+  "brand:winget": "WGT",
+  "brand:scoop": "SCP"
+};
 
 const ui = {
   page: "Scripts",
   data: null,
   search: "",
   automationSearch: "",
+  cheatSearch: "",
+  cheatPendingSearch: "",
+  cheatGroup: "all",
+  cheatSearchTimer: null,
   display: "cards",
   envTarget: "User",
   collapsed: new Set(),
@@ -54,6 +104,11 @@ function render() {
   pageContent.innerHTML = page();
   sidebarVersionElement.textContent = ui.data?.appVersion || "";
   searchShellElement.hidden = ui.page !== "Scripts" && ui.page !== "Automations";
+  cheatSearchShellElement.hidden = ui.page !== "Cheat Sheet";
+  if (ui.page === "Cheat Sheet") {
+    cheatSearchGroupElement.innerHTML = `<option value="all">All groups</option>${(ui.data.cheatSheetGroups || []).map(group => `<option value="${group.id}" ${ui.cheatGroup === group.id ? "selected" : ""}>${esc(group.name)}</option>`).join("")}`;
+    cheatSearchInputElement.value = ui.cheatPendingSearch;
+  }
   searchInputElement.placeholder = ui.page === "Automations" ? "Search automation..." : "Search scripts...";
   searchInputElement.value = ui.page === "Automations" ? ui.automationSearch : ui.search;
   document.querySelectorAll("[data-page]").forEach(button => button.classList.toggle("active", button.dataset.page === ui.page));
@@ -61,32 +116,83 @@ function render() {
 }
 
 function toolbar() {
+  return renderToolbarActions(toolbarActions());
+}
+
+function toolbarActions() {
   if (ui.page === "Scripts") {
-    return `
-      ${tool("collapse_all", "Collapse Groups", "collapse")}
-      <div class="button-group">
-        ${tool("grid_view", "Cards", "display-cards", ui.display === "cards")}
-        ${tool("view_list", "List", "display-list", ui.display === "list")}
-      </div>
-      ${tool("autorenew", "Update all scripts", "update-all", true)}
-      <div class="divider-y"></div>
-      ${tool("box_add", "New group", "create-script-group")}
-      ${tool("attach_file_add", "Import scripts", "import")}
-      ${tool("add_circle", "Create new script", "create-script")}
-    `;
+    return [
+      { icon: "collapse_all", title: "Collapse Groups", action: "collapse" },
+      {
+        group: [
+          { icon: "grid_view", title: "Cards", action: "display-cards", active: ui.display === "cards" },
+          { icon: "view_list", title: "List", action: "display-list", active: ui.display === "list" }
+        ]
+      },
+      { icon: "autorenew", title: "Update all scripts", action: "update-all", active: true },
+      { divider: true },
+      { icon: "box_add", title: "New group", action: "create-script-group" },
+      { icon: "attach_file_add", title: "Import scripts", action: "import" },
+      { icon: "add_circle", title: "Create new script", action: "create-script" }
+    ];
   }
   if (ui.page === "Automations") {
-    return `${tool("box_add", "New group", "create-automation-group")}${tool("shutter_speed_add", "Create automation", "create-automation", true)}`;
+    return [
+      { icon: "box_add", title: "New group", action: "create-automation-group" },
+      { icon: "shutter_speed_add", title: "Create automation", action: "create-automation", active: true }
+    ];
+  }
+  if (ui.page === "Cheat Sheet") {
+    return [
+      { icon: "box_add", title: "New group", action: "create-cheat-group" },
+      { icon: "add_circle", title: "New snippet", action: "create-cheat-entry", active: true }
+    ];
+  }
+  if (ui.page === "Import & Backup") {
+    return [
+      { icon: "upload", title: "Import backup", action: "import-backup" },
+      { icon: "download", title: "Export backup", action: "export-backup", active: true }
+    ];
+  }
+  if (ui.page === "Environment Variables") {
+    return [{ icon: "edit_document", title: "Add or update variable", action: "open-env-editor", active: true }];
   }
   if (ui.page === "Settings") {
     const themeIcon = ui.data?.settings?.theme === "Light" ? "dark_mode" : "light_mode";
-    return `${tool(themeIcon, "Toggle theme", "toggle-theme", true)}`;
+    return [{ icon: themeIcon, title: "Toggle theme", action: "toggle-theme", active: true }];
   }
-  return "";
+  return [];
 }
 
-function tool(iconName, title, action, active = false) {
-  return `<button class="icon-button ${active ? "active" : ""}" title="${title}" data-action="${action}">${icon(iconName)}</button>`;
+function renderToolbarActions(items) {
+  const actions = flattenToolbarItems(items);
+  if (!actions.length) return "";
+  const visible = items.map(item => {
+    if (item.divider) return `<div class="divider-y responsive-action"></div>`;
+    if (item.group) return `<div class="button-group responsive-action">${item.group.map(groupItem => tool(groupItem.icon, groupItem.title, groupItem.action, groupItem.active)).join("")}</div>`;
+    return tool(item.icon, item.title, item.action, item.active, "responsive-action");
+  }).join("");
+  const menu = actions.map(action => `
+    <button class="overflow-menu-item" data-action="${action.action}">
+      ${icon(action.icon)}
+      <span>${esc(action.title)}</span>
+    </button>
+  `).join("");
+  return `
+    ${visible}
+    <div class="top-overflow">
+      <button class="icon-button top-overflow-toggle" title="More actions" aria-label="More actions" aria-haspopup="menu" type="button">${icon("more_vert")}</button>
+      <div class="top-overflow-menu" role="menu">${menu}</div>
+    </div>
+  `;
+}
+
+function flattenToolbarItems(items) {
+  return items.flatMap(item => item.group ? item.group : item.divider ? [] : [item]);
+}
+
+function tool(iconName, title, action, active = false, extraClass = "") {
+  return `<button class="icon-button ${active ? "active" : ""} ${extraClass}" title="${title}" data-action="${action}">${icon(iconName)}</button>`;
 }
 
 function pageTitle() {
@@ -97,6 +203,8 @@ function pageSubtitle() {
   return {
     Scripts: "Manage, sync and execute your collected automation scripts.",
     Automations: "Compose script/configuration pairs into sequential workflows.",
+    "Cheat Sheet": "Keep reusable script fragments grouped, searchable and close at hand.",
+    "Import & Backup": "Export the full app library to a portable ZIP or import it back.",
     Logs: "Execution history with terminal output and step-level automation status.",
     Settings: "Runtime defaults, theme and execution behavior.",
     "Environment Variables": "Browse, add and update user or system environment variables."
@@ -114,6 +222,21 @@ function pagePrimaryActions() {
   if (ui.page === "Automations") {
     return `<button class="primary-button" data-action="create-automation">${icon("shutter_speed_add")} Create Automation</button>`;
   }
+  if (ui.page === "Cheat Sheet") {
+    return `
+      <button class="ghost-button" data-action="create-cheat-group">${icon("box_add")} New Group</button>
+      <button class="primary-button" data-action="create-cheat-entry">${icon("add_circle")} New Snippet</button>
+    `;
+  }
+  if (ui.page === "Import & Backup") {
+    return `
+      <button class="ghost-button" data-action="import-backup">${icon("upload")} Import Backup</button>
+      <button class="primary-button" data-action="export-backup">${icon("download")} Export Backup</button>
+    `;
+  }
+  if (ui.page === "Environment Variables") {
+    return `<button class="primary-button" data-action="open-env-editor">${icon("edit_document")} Add or Update</button>`;
+  }
   return "";
 }
 
@@ -121,6 +244,8 @@ function page() {
   if (!ui.data) return "";
   if (ui.page === "Scripts") return scriptsPage();
   if (ui.page === "Automations") return automationsPage();
+  if (ui.page === "Cheat Sheet") return cheatSheetPage();
+  if (ui.page === "Import & Backup") return importBackupPage();
   if (ui.page === "Logs") return logsPage();
   if (ui.page === "Environment Variables") return environmentPage();
   return settingsPage();
@@ -132,15 +257,20 @@ function scriptsPage() {
   if (!scripts.length) return `<div class="panel">No scripts collected yet. Use Add Script or Create New.</div>`;
   return groupSections(scripts, script => script.group || "Default", items => ui.display === "list"
     ? `<div class="common-list">${items.map(scriptListRow).join("")}</div>`
-    : `<div class="card-grid">${items.map(scriptCard).join("")}</div>`);
+    : `<div class="card-grid">${items.map(scriptCard).join("")}</div>`, group => findByName(ui.data.scriptGroups, group)?.color, group => findByName(ui.data.scriptGroups, group), "script");
 }
 
-function groupSections(items, getGroup, renderItems) {
+function groupSections(items, getGroup, renderItems, getColor = null, getGroupRecord = null, groupType = null) {
   return Object.entries(groupBy(items, getGroup)).map(([group, groupItems]) => {
     const isCollapsed = ui.collapsed.has(group);
+    const groupColor = colorValue(getColor?.(group));
+    const record = getGroupRecord?.(group);
     return `
       <section>
-        <div class="section-toggle" data-collapse="${escAttr(group)}">${icon(isCollapsed ? "chevron_right" : "expand_more")} ${esc(group)} (${groupItems.length})</div>
+        <div class="section-header">
+          <div class="section-toggle" data-collapse="${escAttr(group)}" style="color:${escAttr(groupColor)}">${icon(isCollapsed ? "chevron_right" : "expand_more")} ${esc(group)} (${groupItems.length})</div>
+          ${record && groupType ? `<button class="icon-button" title="Edit group" data-group-edit="${record.id}" data-group-type="${groupType}">${icon("edit")}</button>` : ""}
+        </div>
         ${isCollapsed ? "" : renderItems(groupItems)}
       </section>
     `;
@@ -149,9 +279,9 @@ function groupSections(items, getGroup, renderItems) {
 
 function scriptCard(script) {
   return `
-    <article class="script-card" data-script-open="${script.id}">
+    <article class="script-card accented" style="--item-color:${escAttr(colorValue(script.color))}" data-script-open="${script.id}">
       <div class="card-top">
-        <div class="script-title"><span class="script-icon">${icon("terminal")}</span><span>${esc(script.name)}</span></div>
+        <div class="script-title"><span class="script-icon">${icon(script.icon || "terminal_2")}</span><span>${esc(script.name)}</span></div>
         ${status(script.status)}
       </div>
       <div class="meta">${esc(script.description || script.localPath || "")}</div>
@@ -168,7 +298,7 @@ function scriptListRow(script) {
   return `
     <div class="list-row">
       <div>
-        <div class="script-title"><span class="script-icon">${icon("terminal")}</span><span>${esc(script.name)}</span></div>
+        <div class="script-title"><span class="script-icon">${icon(script.icon || "terminal_2")}</span><span>${esc(script.name)}</span></div>
         <div class="meta code-font">${esc(script.originalPath || script.localPath || "")}</div>
       </div>
       <div class="inline-actions">
@@ -187,9 +317,9 @@ function automationsPage() {
   return groupSections(automations, automation => automation.group || "Default", items => `
     <div class="card-grid">
       ${items.map(automation => `
-        <article class="automation-card">
+        <article class="automation-card accented" style="--item-color:${escAttr(colorValue(automation.color))}">
           <div class="card-top">
-            <div class="script-title"><span class="script-icon">${icon("account_tree")}</span><span>${esc(automation.name)}</span></div>
+            <div class="script-title"><span class="script-icon">${icon(automation.icon || "account_tree")}</span><span>${esc(automation.name)}</span></div>
             <span class="status-pill">${automation.steps?.length || 0} steps</span>
           </div>
           <div class="meta">${esc(automation.description || "No description")}</div>
@@ -201,8 +331,48 @@ function automationsPage() {
         </article>
       `).join("")}
     </div>
-  `);
+  `, group => findByName(ui.data.automationGroups, group)?.color, group => findByName(ui.data.automationGroups, group), "automation");
 }
+
+function cheatSheetPage() {
+  const groups = ui.data.cheatSheetGroups || [];
+  const entries = ui.data.cheatSheetEntries || [];
+  const query = ui.cheatSearch.toLowerCase();
+  const visibleEntries = entries.filter(entry => {
+    const groupMatch = ui.cheatGroup === "all" || entry.groupId === ui.cheatGroup;
+    const textMatch = !query || [entry.code, entry.name, entry.description].some(x => (x || "").toLowerCase().includes(query));
+    return groupMatch && textMatch;
+  });
+
+  if (!groups.length) {
+    return `<div class="panel">No Cheat Sheet groups yet. Create one to start collecting snippets.</div>`;
+  }
+
+  return groups.map(group => {
+    const groupEntries = visibleEntries.filter(entry => entry.groupId === group.id);
+    if ((ui.cheatGroup !== "all" && ui.cheatGroup !== group.id) || !groupEntries.length && query) return "";
+    return `
+      <section>
+        <div class="section-toggle" data-cheat-group-open="${group.id}" style="color:${escAttr(colorValue(group.color))}">${icon(group.icon || "book_ribbon")} ${esc(group.name)} (${groupEntries.length})</div>
+        <div class="card-grid">
+          ${groupEntries.map(entry => `
+            <article class="script-card accented" style="--item-color:${escAttr(colorValue(entry.color))}" data-cheat-entry-open="${entry.id}">
+              <div class="card-top">
+                <div class="script-title"><span class="script-icon">${icon("terminal")}</span><span>${esc(entry.name || "Untitled snippet")}</span></div>
+              </div>
+              <div class="meta">${esc(entry.description || "")}</div>
+              <pre class="cheat-code">${esc(entry.code || "")}</pre>
+              <div class="card-actions">
+                <button class="ghost-button" data-cheat-entry-open="${entry.id}">${icon("edit")} Edit</button>
+              </div>
+            </article>
+          `).join("") || `<div class="panel">No snippets in this group.</div>`}
+        </div>
+      </section>
+    `;
+  }).join("");
+}
+
 
 function logsPage() {
   const logs = ui.data.logs || [];
@@ -220,6 +390,28 @@ function logsPage() {
     </div>
   `;
 }
+
+function importBackupPage() {
+  return `
+    <div class="settings-grid">
+      <section class="panel">
+        <h2 class="panel-title">Export / Backup</h2>
+        <p class="meta">Creates a ZIP with one manifest JSON for app settings, script metadata, automations and Cheat Sheet data, plus folders for script files and log outputs.</p>
+        <div class="backup-actions">
+          <button class="primary-button" data-action="export-backup">${icon("download")} Export Backup</button>
+        </div>
+      </section>
+      <section class="panel">
+        <h2 class="panel-title">Import</h2>
+        <p class="meta">Imports a ScriptManager backup ZIP. Existing objects with the same IDs are updated; missing objects are added.</p>
+        <div class="backup-actions">
+          <button class="ghost-button" data-action="import-backup">${icon("upload")} Import Backup</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
 
 function settingsPage() {
   const settings = ui.data.settings || {};
@@ -273,15 +465,17 @@ function environmentPage() {
         `).join("") || `<div class="meta">No environment variables found.</div>`}
       </div>
     </section>
-    <section class="panel">
-      <h2 class="panel-title">Add or Update</h2>
-      <div class="form-grid">
-        <input id="env-name" placeholder="Variable name">
-        <textarea id="env-value" placeholder="Value"></textarea>
-        <button class="primary-button" data-action="save-env">${icon("arrow_circle_up")} Save Variable</button>
-      </div>
-    </section>
   `;
+}
+
+function showEnvironmentVariableModal() {
+  modal("Add or Update Environment Variable", `
+    <div class="form-grid">
+      <input id="env-name" placeholder="Variable name">
+      <textarea id="env-value" placeholder="Value"></textarea>
+      <p class="meta">Scope: ${esc(ui.envTarget)}</p>
+    </div>
+  `, async () => call("setEnvironmentVariable", { name: value("env-name"), value: value("env-value"), environmentTarget: ui.envTarget }));
 }
 
 function bind() {
@@ -292,6 +486,18 @@ function bind() {
     else ui.search = event.target.value;
     render();
   };
+  cheatSearchGroupElement.onchange = event => {
+    ui.cheatGroup = event.target.value;
+    render();
+  };
+  cheatSearchInputElement.oninput = event => {
+    ui.cheatPendingSearch = event.target.value;
+    clearTimeout(ui.cheatSearchTimer);
+    ui.cheatSearchTimer = setTimeout(() => {
+      ui.cheatSearch = ui.cheatPendingSearch;
+      render();
+    }, 1000);
+  };
   document.querySelector("#env-target")?.addEventListener("change", async event => { ui.envTarget = event.target.value; await refresh(); });
   document.querySelectorAll("[data-collapse]").forEach(button => button.onclick = () => toggleCollapse(button.dataset.collapse));
   document.querySelectorAll("[data-run-menu]").forEach(button => button.onclick = () => showRunMenu(button.dataset.runMenu));
@@ -300,6 +506,13 @@ function bind() {
   document.querySelectorAll("[data-run-automation]").forEach(button => button.onclick = () => runAutomation(button.dataset.runAutomation));
   document.querySelectorAll("[data-automation-open]").forEach(button => button.onclick = () => showAutomationDetails(button.dataset.automationOpen));
   document.querySelectorAll("[data-log-open]").forEach(button => button.onclick = () => showLog(button.dataset.logOpen));
+  document.querySelectorAll("[data-group-edit]").forEach(button => button.onclick = event => {
+    event.stopPropagation();
+    const source = button.dataset.groupType === "automation" ? ui.data.automationGroups : ui.data.scriptGroups;
+    showGroupEditModal(button.dataset.groupType, source.find(group => group.id === button.dataset.groupEdit));
+  });
+  document.querySelectorAll("[data-cheat-group-open]").forEach(button => button.onclick = () => showCheatGroupModal(ui.data.cheatSheetGroups.find(group => group.id === button.dataset.cheatGroupOpen)));
+  document.querySelectorAll("[data-cheat-entry-open]").forEach(button => button.onclick = event => { event.stopPropagation(); showCheatEntryModal(ui.data.cheatSheetEntries.find(entry => entry.id === button.dataset.cheatEntryOpen)); });
 }
 
 async function handleAction(action) {
@@ -313,11 +526,16 @@ async function handleAction(action) {
     if (action === "create-script-group") return showGroupModal("script");
     if (action === "create-automation") return showCreateAutomationModal();
     if (action === "create-automation-group") return showGroupModal("automation");
+    if (action === "create-cheat-group") return showCheatGroupModal(null);
+    if (action === "create-cheat-entry") return showCheatEntryModal(null);
     if (action === "toggle-theme") return await call("saveSettings", { ...ui.data.settings, theme: ui.data.settings.theme === "Light" ? "Dark" : "Light" });
     if (action === "save-settings") return await saveSettings();
+    if (action === "open-env-editor") return showEnvironmentVariableModal();
     if (action === "save-env") return await call("setEnvironmentVariable", { name: value("env-name"), value: value("env-value"), environmentTarget: ui.envTarget });
     if (action === "check-updates") return await call("checkForUpdates");
     if (action === "download-update") return await call("downloadAndRunInstaller");
+    if (action === "export-backup") return await call("exportBackup");
+    if (action === "import-backup") return await confirmModal("Import backup", "Importing a backup updates existing objects with matching IDs and adds missing data. Continue?", () => call("importBackup"));
   } catch (error) {
     showError(error.message);
   }
@@ -362,28 +580,115 @@ function showCreateScriptModal() {
     <div class="form-grid">
       <input id="script-name" placeholder="Script name">
       <select id="script-extension"><option>.ps1</option><option>.cmd</option><option>.bat</option><option>.sh</option><option>.py</option><option>.js</option><option>.sql</option></select>
+      ${iconPicker("script-icon", "terminal_2")}
+      ${colorPicker("script-color", "#c0c1ff")}
       <textarea id="script-content" class="terminal-box" placeholder="Write commands line by line"></textarea>
     </div>
-  `, async () => call("createScript", { name: value("script-name"), extension: value("script-extension"), content: value("script-content") }));
+  `, async () => call("createScript", { name: value("script-name"), extension: value("script-extension"), content: value("script-content"), icon: value("script-icon"), color: value("script-color") }));
+  bindIconPicker("script-icon");
+  bindColorPicker("script-color");
 }
 
 function showGroupModal(type) {
+  const fallbackColor = type === "automation" ? "#ffb783" : "#4fdbc8";
   modal("New Group", `
     <div class="form-grid">
       <input id="group-name" placeholder="Group name">
       <textarea id="group-description" placeholder="Description"></textarea>
+      ${colorPicker("group-color", fallbackColor)}
     </div>
-  `, async () => call(type === "automation" ? "createAutomationGroup" : "createScriptGroup", { name: value("group-name"), description: value("group-description") }));
+  `, async () => call(type === "automation" ? "createAutomationGroup" : "createScriptGroup", { name: value("group-name"), description: value("group-description"), color: value("group-color") }));
+  bindColorPicker("group-color");
+}
+
+function showGroupEditModal(type, group) {
+  const isAutomation = type === "automation";
+  modal(isAutomation ? "Edit Automation Group" : "Edit Script Group", `
+    ${modalAccent(group.color)}
+    <div class="form-grid">
+      <input id="edit-group-name" placeholder="Group name" value="${escAttr(group.name || "")}">
+      <textarea id="edit-group-description" placeholder="Description">${esc(group.description || "")}</textarea>
+      ${colorPicker("edit-group-color", group.color || (isAutomation ? "#ffb783" : "#4fdbc8"))}
+      <button class="ghost-button" data-delete-group="${group.id}">${icon("delete")} Delete Group</button>
+    </div>
+  `, async () => call(isAutomation ? "updateAutomationGroup" : "updateScriptGroup", {
+    groupId: group.id,
+    name: value("edit-group-name"),
+    description: value("edit-group-description"),
+    color: value("edit-group-color")
+  }));
+  bindColorPicker("edit-group-color");
+  modalRoot.querySelector("[data-delete-group]").onclick = event => {
+    event.preventDefault();
+    const phrase = `delete group ${group.name}`;
+    phraseConfirm(isAutomation ? "Delete Automation Group" : "Delete Script Group", phrase, async () => {
+      await call(isAutomation ? "deleteAutomationGroup" : "deleteScriptGroup", { groupId: group.id });
+      closeModal();
+    });
+  };
+}
+
+function showCheatGroupModal(group) {
+  const isEdit = Boolean(group);
+  modal(isEdit ? "Edit Cheat Sheet Group" : "New Cheat Sheet Group", `
+    ${modalAccent(group?.color)}
+    <div class="form-grid">
+      <input id="cheat-group-name" placeholder="Group name" value="${escAttr(group?.name || "")}">
+      ${iconPicker("cheat-group-icon", group?.icon || "book_ribbon")}
+      ${colorPicker("cheat-group-color", group?.color || "#4fdbc8")}
+      ${isEdit ? `<button class="ghost-button" data-delete-cheat-group="${group.id}">${icon("delete")} Delete Group</button>` : ""}
+    </div>
+  `, async () => call("saveCheatSheetGroup", { groupId: group?.id || "", name: value("cheat-group-name"), icon: value("cheat-group-icon"), color: value("cheat-group-color") }));
+  bindIconPicker("cheat-group-icon");
+  bindColorPicker("cheat-group-color");
+  const deleteButton = modalRoot.querySelector("[data-delete-cheat-group]");
+  if (deleteButton) deleteButton.onclick = async event => {
+    event.preventDefault();
+    const phrase = `delete group ${group.name}`;
+    phraseConfirm("Delete Cheat Sheet Group", phrase, async () => {
+      await call("deleteCheatSheetGroup", { groupId: group.id });
+      closeModal();
+    });
+  };
+}
+
+function showCheatEntryModal(entry) {
+  const groups = ui.data.cheatSheetGroups || [];
+  const selectedGroupId = entry?.groupId || (ui.cheatGroup !== "all" ? ui.cheatGroup : groups[0]?.id || "");
+  const isEdit = Boolean(entry);
+  modal(isEdit ? "Edit Cheat Sheet Snippet" : "New Cheat Sheet Snippet", `
+    ${modalAccent(entry?.color)}
+    <div class="form-grid">
+      <input id="cheat-entry-name" placeholder="Name" value="${escAttr(entry?.name || "")}">
+      <textarea id="cheat-entry-description" placeholder="Description">${esc(entry?.description || "")}</textarea>
+      <select id="cheat-entry-group">${groups.map(group => `<option value="${group.id}" ${group.id === selectedGroupId ? "selected" : ""}>${esc(group.name)}</option>`).join("")}</select>
+      ${colorPicker("cheat-entry-color", entry?.color || "#c0c1ff")}
+      <textarea id="cheat-entry-code" class="terminal-box" placeholder="Code">${esc(entry?.code || "")}</textarea>
+      ${isEdit ? `<button class="ghost-button" data-delete-cheat-entry="${entry.id}">${icon("delete")} Delete Snippet</button>` : ""}
+    </div>
+  `, async () => call("saveCheatSheetEntry", { entryId: entry?.id || "", groupId: value("cheat-entry-group"), name: value("cheat-entry-name"), description: value("cheat-entry-description"), code: value("cheat-entry-code"), color: value("cheat-entry-color") }));
+  bindColorPicker("cheat-entry-color");
+  const deleteButton = modalRoot.querySelector("[data-delete-cheat-entry]");
+  if (deleteButton) deleteButton.onclick = async event => {
+    event.preventDefault();
+    confirmModal("Delete snippet", `Delete Cheat Sheet snippet "${entry.name || "Untitled snippet"}"?`, async () => {
+      await call("deleteCheatSheetEntry", { entryId: entry.id });
+      closeModal();
+    });
+  };
 }
 
 async function showScriptDetails(id) {
   const script = ui.data.scripts.find(item => item.id === id);
   const code = await api("getScriptCode", { scriptId: id });
   modal("Script Details", `
+    ${modalAccent(script.color)}
     <div class="form-grid">
       <input id="edit-script-name" value="${escAttr(script.name)}">
       <textarea id="edit-script-description" placeholder="Description">${esc(script.description || "")}</textarea>
       <select id="edit-script-group">${ui.data.scriptGroups.map(group => `<option value="${group.id}" ${group.id === script.groupId ? "selected" : ""}>${esc(group.name)}</option>`).join("")}</select>
+      ${iconPicker("edit-script-icon", script.icon || "terminal_2")}
+      ${colorPicker("edit-script-color", script.color || "#c0c1ff")}
       <div class="meta code-font">${esc(script.originalPath || "Local script created in app")}</div>
       <div class="terminal-box">${esc(code)}</div>
       <div class="inline-actions">
@@ -395,6 +700,8 @@ async function showScriptDetails(id) {
     </div>
   `);
   bindScriptDetails(script);
+  bindIconPicker("edit-script-icon");
+  bindColorPicker("edit-script-color");
 }
 
 function configItem(config) {
@@ -414,14 +721,23 @@ function configItem(config) {
 
 function bindScriptDetails(script) {
   modalRoot.querySelector('[data-modal-action="save-script"]').onclick = async () => {
-    await call("updateScript", { scriptId: script.id, name: value("edit-script-name"), description: value("edit-script-description"), groupId: value("edit-script-group") });
+    await call("updateScript", { scriptId: script.id, name: value("edit-script-name"), description: value("edit-script-description"), groupId: value("edit-script-group"), icon: value("edit-script-icon"), color: value("edit-script-color") });
     closeModal();
   };
-  modalRoot.querySelector('[data-modal-action="delete-script"]').onclick = async () => { await call("deleteScript", { scriptId: script.id }); closeModal(); };
+  modalRoot.querySelector('[data-modal-action="delete-script"]').onclick = () => confirmModal("Delete script", `Delete script "${script.name}"?`, async () => {
+    await call("deleteScript", { scriptId: script.id });
+    closeModal();
+  });
   modalRoot.querySelector('[data-modal-action="add-config"]').onclick = () => showConfigModal(script, null);
   modalRoot.querySelectorAll("[data-config-edit]").forEach(button => button.onclick = () => showConfigModal(script, script.configurations.find(c => c.id === button.dataset.configEdit)));
   modalRoot.querySelectorAll("[data-config-copy]").forEach(button => button.onclick = async () => { await call("duplicateConfiguration", { scriptId: script.id, configurationId: button.dataset.configCopy }); closeModal(); });
-  modalRoot.querySelectorAll("[data-config-delete]").forEach(button => button.onclick = async () => { await call("deleteConfiguration", { scriptId: script.id, configurationId: button.dataset.configDelete }); closeModal(); });
+  modalRoot.querySelectorAll("[data-config-delete]").forEach(button => button.onclick = () => {
+    const config = script.configurations.find(c => c.id === button.dataset.configDelete);
+    confirmModal("Delete configuration", `Delete configuration "${config?.name || "Default"}"?`, async () => {
+      await call("deleteConfiguration", { scriptId: script.id, configurationId: button.dataset.configDelete });
+      closeModal();
+    });
+  });
   modalRoot.querySelectorAll("[data-config-run]").forEach(button => button.onclick = async () => { await runScript(script.id, button.dataset.configRun); closeModal(); });
   bindConfigDrag(script.id);
 }
@@ -507,18 +823,25 @@ function showCreateAutomationModal() {
       <input id="automation-name" placeholder="Automation name">
       <textarea id="automation-description" placeholder="Description"></textarea>
       <select id="automation-group">${ui.data.automationGroups.map(group => `<option value="${group.id}">${esc(group.name)}</option>`).join("")}</select>
+      ${iconPicker("automation-icon", "account_tree")}
+      ${colorPicker("automation-color", "#8083ff")}
     </div>
-  `, async () => call("createAutomation", { name: value("automation-name"), description: value("automation-description"), groupId: value("automation-group") }));
+  `, async () => call("createAutomation", { name: value("automation-name"), description: value("automation-description"), groupId: value("automation-group"), icon: value("automation-icon"), color: value("automation-color") }));
+  bindIconPicker("automation-icon");
+  bindColorPicker("automation-color");
 }
 
 function showAutomationDetails(id) {
   const automation = ui.data.automations.find(item => item.id === id);
   const steps = [...(automation.steps || [])].sort((a,b) => a.order - b.order);
   modal("Automation Details", `
+    ${modalAccent(automation.color)}
     <div class="form-grid">
       <input id="automation-edit-name" value="${escAttr(automation.name)}">
       <textarea id="automation-edit-description">${esc(automation.description || "")}</textarea>
       <select id="automation-edit-group">${ui.data.automationGroups.map(group => `<option value="${group.id}" ${group.id === automation.groupId ? "selected" : ""}>${esc(group.name)}</option>`).join("")}</select>
+      ${iconPicker("automation-edit-icon", automation.icon || "account_tree")}
+      ${colorPicker("automation-edit-color", automation.color || "#8083ff")}
       <div class="inline-actions">
         <button class="ghost-button" data-auto-action="save">${icon("save")} Save</button>
         <button class="ghost-button" data-auto-action="add">${icon("add")} Add Pair</button>
@@ -534,8 +857,16 @@ function showAutomationDetails(id) {
       <button class="primary-button" data-run-auto="${automation.id}">${icon("play_arrow")} Run Automation</button>
     </div>
   `);
-  modalRoot.querySelector('[data-auto-action="save"]').onclick = async () => { await call("updateAutomation", { automationId: automation.id, name: value("automation-edit-name"), description: value("automation-edit-description"), groupId: value("automation-edit-group") }); closeModal(); };
-  modalRoot.querySelector('[data-auto-action="delete"]').onclick = async () => { await call("deleteAutomation", { automationId: automation.id }); closeModal(); };
+  bindIconPicker("automation-edit-icon");
+  bindColorPicker("automation-edit-color");
+  modalRoot.querySelector('[data-auto-action="save"]').onclick = async () => { await call("updateAutomation", { automationId: automation.id, name: value("automation-edit-name"), description: value("automation-edit-description"), groupId: value("automation-edit-group"), icon: value("automation-edit-icon"), color: value("automation-edit-color") }); closeModal(); };
+  modalRoot.querySelector('[data-auto-action="delete"]').onclick = () => {
+    const phrase = `delete automation ${automation.name}`;
+    phraseConfirm("Delete Automation", phrase, async () => {
+      await call("deleteAutomation", { automationId: automation.id });
+      closeModal();
+    });
+  };
   modalRoot.querySelector('[data-auto-action="add"]').onclick = () => showAddStepModal(automation.id);
   modalRoot.querySelector("[data-run-auto]").onclick = async () => { await runAutomation(automation.id); closeModal(); };
   modalRoot.querySelectorAll("[data-remove-step]").forEach(button => button.onclick = async () => { await call("removeAutomationStep", { automationId: automation.id, order: Number(button.dataset.removeStep) }); closeModal(); });
@@ -610,6 +941,38 @@ function modal(title, body, onConfirm = null) {
   };
 }
 
+function confirmModal(title, message, onConfirm) {
+  modal(title, `<p class="meta">${esc(message)}</p>`, onConfirm);
+}
+
+function phraseConfirm(title, phrase, onConfirm) {
+  modalRoot.innerHTML = `
+    <div class="modal-backdrop">
+      <div class="modal custom-scrollbar">
+        <h2 class="modal-title">${esc(title)}</h2>
+        <p class="meta">Type <strong>${esc(phrase)}</strong> to confirm.</p>
+        <input id="phrase-confirm-input" placeholder="${escAttr(phrase)}">
+        <div class="modal-actions">
+          <button class="ghost-button" data-modal-close>Cancel</button>
+          <button class="primary-button" data-phrase-confirm>Confirm</button>
+        </div>
+      </div>
+    </div>
+  `;
+  modalRoot.querySelector("[data-modal-close]").onclick = closeModal;
+  modalRoot.querySelector("[data-phrase-confirm]").onclick = async () => {
+    if (value("phrase-confirm-input") !== phrase) {
+      showError("Confirmation phrase does not match.");
+      return;
+    }
+    try {
+      await onConfirm();
+    } catch (error) {
+      showError(error.message);
+    }
+  };
+}
+
 function closeModal() { modalRoot.innerHTML = ""; }
 function showError(message) { modal("Error", `<div class="terminal-box">${esc(message)}</div>`); }
 
@@ -618,12 +981,64 @@ function status(value) {
   return `<span class="status-pill ${statusClass}">status: ${esc(value || "Unknown")}</span>`;
 }
 
+function colorPicker(id, selected) {
+  const color = colorValue(selected);
+  return `
+    <div class="form-grid">
+      <label>Color</label>
+      <div class="palette">${colorPalette.map(item => `<button type="button" class="swatch" style="--swatch-color:${escAttr(item)}" data-color-target="${id}" data-color="${escAttr(item)}" title="${escAttr(item)}"></button>`).join("")}</div>
+      <input id="${id}" value="${escAttr(color)}" placeholder="#4fdbc8 or rgb(79, 219, 200)">
+    </div>
+  `;
+}
+
+function iconPicker(id, selected) {
+  const current = selected || "code";
+  return `
+    <div class="form-grid">
+      <label>Icon</label>
+      <div class="icon-palette">${iconCatalog.map(item => `<button type="button" class="icon-choice" data-icon-target="${id}" data-icon-value="${escAttr(item)}" title="${escAttr(item)}">${icon(item)}</button>`).join("")}</div>
+      <input id="${id}" value="${escAttr(current)}" placeholder="Material Symbol name">
+    </div>
+  `;
+}
+
+function bindIconPicker(id) {
+  modalRoot.querySelectorAll(`[data-icon-target="${id}"]`).forEach(button => button.onclick = event => {
+    event.preventDefault();
+    document.getElementById(id).value = button.dataset.iconValue;
+  });
+}
+
+function bindColorPicker(id) {
+  modalRoot.querySelectorAll(`[data-color-target="${id}"]`).forEach(button => button.onclick = event => {
+    event.preventDefault();
+    document.getElementById(id).value = button.dataset.color;
+  });
+}
+
+function modalAccent(color) {
+  return `<div class="modal-accent" style="--item-color:${escAttr(colorValue(color))}"></div>`;
+}
+
+function colorValue(value) {
+  const text = String(value || "").trim();
+  if (/^#[0-9a-f]{3}([0-9a-f]{3})?$/i.test(text)) return text;
+  const rgb = /^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/i.exec(text);
+  if (!rgb) return "#c0c1ff";
+  return "#" + rgb.slice(1).map(part => Math.max(0, Math.min(255, Number(part))).toString(16).padStart(2, "0")).join("");
+}
+
 function updateStatus(value) {
   const statusClass = value === "UPTODATE" ? "ok" : value === "OUTDATED" ? "warn" : "error";
   return `<span class="status-pill ${statusClass}">${esc(value || "NOINFO")}</span>`;
 }
 
 function icon(name) {
+  if (brandIconLabels[name]) {
+    return `<span class="brand-symbol" data-icon="${escAttr(name)}">${esc(brandIconLabels[name])}</span>`;
+  }
+
   const map = {
     terminal: "terminal_2",
     terminal_2: "terminal_2",
@@ -640,16 +1055,19 @@ function icon(name) {
     account_tree: "account_tree",
     coffee_maker: "coffee_maker",
     perm_data_setting: "perm_data_setting",
+    book_ribbon: "book_ribbon",
     history: "history",
     browse_activity: "browse_activity",
     play_arrow: "play_arrow",
     info: "info",
     save: "save",
     arrow_circle_up: "arrow_circle_up",
+    edit_document: "edit_document",
     delete: "delete",
     edit: "edit",
     content_copy: "content_copy",
     download: "download",
+    swap_vert: "swap_vert",
     box_add: "box_add",
     shutter_speed_add: "shutter_speed_add",
     dark_mode: "dark_mode",
@@ -676,6 +1094,7 @@ function groupBy(items, selector) {
   }, {});
 }
 
+function findByName(items, name) { return (items || []).find(item => item.name === name); }
 function value(id) { return document.getElementById(id)?.value || ""; }
 function tail(text, length) { return text.length <= length ? text : text.slice(-length); }
 function formatDate(value) { return value ? new Date(value).toLocaleString() : ""; }

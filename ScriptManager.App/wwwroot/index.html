@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ScriptTerminal | ScriptManager</title>
+  <title>ScriptManager</title>
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -11,14 +11,20 @@
   <div id="app">
     <header class="top-shell">
       <div class="top-left">
-        <img class="brand-logo" src="img/logo.png" alt="">
-        <div class="brand">ScriptTerminal</div>
+        <div class="brand">Your Command Center</div>
       </div>
       <nav class="top-actions">
         <div id="toolbar-search-shell" class="search-shell">
           <span class="material-symbols-outlined" data-icon="search">search</span>
           <input id="toolbar-search-input" placeholder="Search scripts...">
           <span class="kbd">/</span>
+        </div>
+        <div id="cheat-search-shell" class="cheat-search-shell" hidden>
+          <select id="cheat-search-group" aria-label="Cheat Sheet group"></select>
+          <div class="search-shell compact">
+            <span class="material-symbols-outlined" data-icon="search">search</span>
+            <input id="cheat-search-input" placeholder="Search snippets...">
+          </div>
         </div>
         <div id="top-actions" class="top-action-buttons"></div>
       </nav>
@@ -46,6 +52,14 @@
         <button class="nav-item" data-page="Environment Variables">
           <span class="material-symbols-outlined" data-icon="perm_data_setting">perm_data_setting</span>
           <span class="nav-label">Environment Variables</span>
+        </button>
+        <button class="nav-item" data-page="Cheat Sheet">
+          <span class="material-symbols-outlined" data-icon="book_ribbon">book_ribbon</span>
+          <span class="nav-label">Cheat Sheet</span>
+        </button>
+        <button class="nav-item" data-page="Import & Backup">
+          <span class="material-symbols-outlined" data-icon="swap_vert">swap_vert</span>
+          <span class="nav-label">Import & Backup</span>
         </button>
         <button class="nav-item" data-page="Logs">
           <span class="material-symbols-outlined" data-icon="browse_activity">browse_activity</span>
