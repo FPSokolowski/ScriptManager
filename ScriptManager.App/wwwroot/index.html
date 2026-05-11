@@ -1,0 +1,80 @@
+<!doctype html>
+<html class="dark" lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ScriptTerminal | ScriptManager</title>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="bg-background text-on-surface custom-scrollbar">
+  <div id="app">
+    <header class="top-shell">
+      <div class="top-left">
+        <img class="brand-logo" src="img/logo.png" alt="">
+        <div class="brand">ScriptTerminal</div>
+      </div>
+      <nav class="top-actions">
+        <div id="toolbar-search-shell" class="search-shell">
+          <span class="material-symbols-outlined" data-icon="search">search</span>
+          <input id="toolbar-search-input" placeholder="Search scripts...">
+          <span class="kbd">/</span>
+        </div>
+        <div id="top-actions" class="top-action-buttons"></div>
+      </nav>
+    </header>
+
+    <aside class="side-shell">
+      <div class="project-chip">
+        <div class="project-icon">
+          <img src="img/icon.png" alt="">
+        </div>
+        <div>
+          <div class="project-name">ScriptManager</div>
+          <div class="project-sub">Local Workspace</div>
+        </div>
+      </div>
+      <nav class="side-nav">
+        <button class="nav-item active" data-page="Scripts">
+          <span class="material-symbols-outlined" data-icon="terminal_2">terminal_2</span>
+          <span class="nav-label">Scripts</span>
+        </button>
+        <button class="nav-item" data-page="Automations">
+          <span class="material-symbols-outlined" data-icon="coffee_maker">coffee_maker</span>
+          <span class="nav-label">Automation</span>
+        </button>
+        <button class="nav-item" data-page="Environment Variables">
+          <span class="material-symbols-outlined" data-icon="perm_data_setting">perm_data_setting</span>
+          <span class="nav-label">Environment Variables</span>
+        </button>
+        <button class="nav-item" data-page="Logs">
+          <span class="material-symbols-outlined" data-icon="browse_activity">browse_activity</span>
+          <span class="nav-label">Logs</span>
+        </button>
+        <button class="nav-item" data-page="Settings">
+          <span class="material-symbols-outlined" data-icon="settings">settings</span>
+          <span class="nav-label">Settings</span>
+        </button>
+      </nav>
+      <div class="sidebar-footer">
+        <span>Version</span>
+        <strong id="sidebar-version">0.1.0</strong>
+      </div>
+    </aside>
+
+    <main class="content custom-scrollbar">
+      <section class="page-header">
+        <div>
+          <h1 id="page-title" class="page-title">Script Dashboard</h1>
+          <p id="page-subtitle" class="page-subtitle">Manage, sync and execute your collected automation scripts.</p>
+        </div>
+        <div id="page-primary-actions" class="toolbar"></div>
+      </section>
+
+      <section id="page-content" class="sections"></section>
+    </main>
+  </div>
+  <div id="modal-root"></div>
+  <script src="app.js"></script>
+</body>
+</html>

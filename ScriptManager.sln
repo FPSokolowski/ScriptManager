@@ -1,0 +1,30 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ScriptManager.Core", "ScriptManager.Core\ScriptManager.Core.csproj", "{1013C62B-C138-4506-9F58-4E79E1A66E38}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ScriptManager.App", "ScriptManager.App\ScriptManager.App.csproj", "{3E2A30CF-F33A-43E7-81B4-C23C7CE4159B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ScriptManager.Tests", "ScriptManager.Tests\ScriptManager.Tests.csproj", "{739D6C82-4748-451F-BBCF-CA5422E14203}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{1013C62B-C138-4506-9F58-4E79E1A66E38}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1013C62B-C138-4506-9F58-4E79E1A66E38}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1013C62B-C138-4506-9F58-4E79E1A66E38}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1013C62B-C138-4506-9F58-4E79E1A66E38}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3E2A30CF-F33A-43E7-81B4-C23C7CE4159B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3E2A30CF-F33A-43E7-81B4-C23C7CE4159B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3E2A30CF-F33A-43E7-81B4-C23C7CE4159B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3E2A30CF-F33A-43E7-81B4-C23C7CE4159B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{739D6C82-4748-451F-BBCF-CA5422E14203}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{739D6C82-4748-451F-BBCF-CA5422E14203}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{739D6C82-4748-451F-BBCF-CA5422E14203}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{739D6C82-4748-451F-BBCF-CA5422E14203}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
