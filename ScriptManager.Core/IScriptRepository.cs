@@ -32,6 +32,7 @@ public interface IScriptRepository : IDisposable
     CheatSheetEntry? GetCheatSheetEntry(Guid id);
     void UpsertCheatSheetEntry(CheatSheetEntry entry);
     void DeleteCheatSheetEntry(Guid id);
+    void ReorderCheatSheetEntries(Guid groupId, IReadOnlyList<Guid> entryIds);
 
     AppSettings GetSettings();
     void SaveSettings(AppSettings settings);

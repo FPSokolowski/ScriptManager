@@ -52,11 +52,41 @@ public sealed class LiteDbScriptRepository : IScriptRepository
     }
 
     public IReadOnlyList<CheatSheetEntry> GetCheatSheetEntries() =>
-        _database.GetCollection<CheatSheetEntry>("cheatSheetEntries").FindAll().OrderBy(x => x.Name).ToList();
+        _database.GetCollection<CheatSheetEntry>("cheatSheetEntries").FindAll().OrderBy(x => x.GroupId).ThenBy(x => x.Order).ThenBy(x => x.Name).ToList();
 
     public CheatSheetEntry? GetCheatSheetEntry(Guid id) => _database.GetCollection<CheatSheetEntry>("cheatSheetEntries").FindById(id);
     public void UpsertCheatSheetEntry(CheatSheetEntry entry) => _database.GetCollection<CheatSheetEntry>("cheatSheetEntries").Upsert(entry);
-    public void DeleteCheatSheetEntry(Guid id) => _database.GetCollection<CheatSheetEntry>("cheatSheetEntries").Delete(id);
+    public void DeleteCheatSheetEntry(Guid id)
+    {
+        var collection = _database.GetCollection<CheatSheetEntry>("cheatSheetEntries");
+        var entry = collection.FindById(id);
+        if (entry is null)
+        {
+            return;
+        }
+
+        collection.Delete(id);
+        NormalizeCheatSheetGroupOrder(entry.GroupId);
+    }
+
+    public void ReorderCheatSheetEntries(Guid groupId, IReadOnlyList<Guid> entryIds)
+    {
+        var collection = _database.GetCollection<CheatSheetEntry>("cheatSheetEntries");
+        var entries = collection.Find(x => x.GroupId == groupId).ToList();
+        for (var index = 0; index < entryIds.Count; index++)
+        {
+            var entry = entries.FirstOrDefault(x => x.Id == entryIds[index]);
+            if (entry is null)
+            {
+                continue;
+            }
+
+            entry.Order = index;
+            collection.Upsert(entry);
+        }
+
+        NormalizeCheatSheetGroupOrder(groupId);
+    }
 
     public AppSettings GetSettings()
     {
@@ -73,6 +103,17 @@ public sealed class LiteDbScriptRepository : IScriptRepository
     public void Dispose() => _database.Dispose();
 
     private static Guid AppSettingsId => Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+
+    private void NormalizeCheatSheetGroupOrder(Guid groupId)
+    {
+        var collection = _database.GetCollection<CheatSheetEntry>("cheatSheetEntries");
+        var entries = collection.Find(x => x.GroupId == groupId).OrderBy(x => x.Order).ThenBy(x => x.Name).ToList();
+        for (var index = 0; index < entries.Count; index++)
+        {
+            entries[index].Order = index;
+            collection.Upsert(entries[index]);
+        }
+    }
 
     private void Seed()
     {

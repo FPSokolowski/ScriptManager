@@ -38,7 +38,6 @@ public sealed class ScriptLibraryService
         script.Configurations.Add(new ScriptConfiguration
         {
             Name = "Default",
-            Description = "Default run configuration",
             WorkingDirectory = Path.GetDirectoryName(sourcePath) ?? Environment.CurrentDirectory
         });
         _repository.UpsertScript(script);
@@ -80,7 +79,6 @@ public sealed class ScriptLibraryService
         script.Configurations.Add(new ScriptConfiguration
         {
             Name = "Default",
-            Description = "Default run configuration",
             WorkingDirectory = Environment.CurrentDirectory
         });
         _repository.UpsertScript(script);

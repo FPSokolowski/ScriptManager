@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Net;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Web.WebView2.Core;
@@ -33,6 +35,10 @@ public sealed class MainForm : Form
     private readonly WebView2 _webView = new();
     private readonly HttpClient _httpClient = new() { Timeout = TimeSpan.FromSeconds(10) };
     private UpdateInfo _updateInfo = new("NOINFO", null, null, null, null);
+    private readonly object _logCleanupLock = new();
+    private LogCleanupStatus _logCleanupStatus = LogCleanupStatus.Idle();
+    private bool _startupLogCleanupQueued;
+    private bool _closingAfterLogCleanup;
 
     public MainForm()
     {
@@ -50,7 +56,7 @@ public sealed class MainForm : Form
         _paths.Ensure();
         _repository = new LiteDbScriptRepository(_paths.DatabasePath);
         _library = new ScriptLibraryService(_repository, _paths);
-        _execution = new ScriptExecutionService(_repository, _library);
+        _execution = new ScriptExecutionService(_repository, _library, _paths);
         _library.CompareAndUpdateAll();
         var settings = _repository.GetSettings();
         RestoreWindowPlacement(settings);
@@ -65,7 +71,7 @@ public sealed class MainForm : Form
         Controls.Add(_webView);
 
         Load += async (_, _) => await InitializeWebViewAsync();
-        FormClosing += (_, _) => SaveWindowPlacement();
+        FormClosing += MainFormClosing;
         FormClosed += (_, _) =>
         {
             _repository.Dispose();
@@ -99,7 +105,6 @@ public sealed class MainForm : Form
         {
             Id = id,
             Name = GetString(element, "name", "Default"),
-            Description = GetString(element, "description", ""),
             WorkingDirectory = GetString(element, "workingDirectory", ""),
             RunAsAdmin = element.TryGetProperty("runAsAdmin", out var admin) && admin.GetBoolean(),
             Parameters = parameters
@@ -180,6 +185,19 @@ public sealed class MainForm : Form
 
     private static Guid? GetOptionalGuid(JsonElement element, string property) =>
         element.TryGetProperty(property, out var value) && Guid.TryParse(value.GetString(), out var id) ? id : null;
+
+    private static IReadOnlyList<Guid> ReadGuidArray(JsonElement element, string property)
+    {
+        if (!element.TryGetProperty(property, out var array) || array.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        return array.EnumerateArray()
+            .Select(value => Guid.TryParse(value.GetString(), out var id) ? id : Guid.Empty)
+            .Where(id => id != Guid.Empty)
+            .ToList();
+    }
 
     private static string GetString(JsonElement element, string property, string defaultValue = "")
     {
@@ -268,6 +286,7 @@ public sealed class MainForm : Form
         {
             await RefreshUpdateInfoAsync();
             await ExecuteFrontendRefreshAsync();
+            QueueStartupLogCleanup();
         };
 
         var index = Path.Combine(AppContext.BaseDirectory, "wwwroot", "index.html");
@@ -301,6 +320,12 @@ public sealed class MainForm : Form
             case "getState":
                 return BuildState(GetEnvTarget(payload));
 
+            case "getLogCleanupStatus":
+                return GetLogCleanupStatus();
+
+            case "chooseLogDirectory":
+                return ChooseLogDirectory();
+
             case "importScripts":
                 ImportScriptsFromDialog();
                 return BuildState(GetEnvTarget(payload));
@@ -310,7 +335,7 @@ public sealed class MainForm : Form
                 return BuildState(GetEnvTarget(payload));
 
             case "createScript":
-                var createdScript = _library.CreateScript(GetString(payload, "name"), GetString(payload, "content"), GetString(payload, "extension", ".ps1"));
+                var createdScript = _library.CreateScript(GetString(payload, "name"), GetString(payload, "content"), ".ps1");
                 createdScript.Color = GetColor(payload, "color", createdScript.Color);
                 createdScript.Icon = GetString(payload, "icon", createdScript.Icon);
                 _repository.UpsertScript(createdScript);
@@ -356,8 +381,17 @@ public sealed class MainForm : Form
                 return BuildState(GetEnvTarget(payload));
 
             case "runScript":
-                await _execution.RunScriptAsync(GetGuid(payload, "scriptId"), GetGuid(payload, "configurationId"));
-                return BuildState(GetEnvTarget(payload));
+            {
+                var log = await _execution.RunScriptAsync(GetGuid(payload, "scriptId"), GetOptionalGuid(payload, "configurationId"), true, GetRunExecutionOptions());
+                PersistExecutionLogFile(log);
+                return BuildState(GetEnvTarget(payload), log);
+            }
+
+            case "prepareRunScript":
+                return new
+                {
+                    commands = _execution.PrepareScriptRun(GetGuid(payload, "scriptId"), GetOptionalGuid(payload, "configurationId"))
+                };
 
             case "createAutomationGroup":
                 _repository.UpsertAutomationGroup(new AutomationGroup { Name = GetString(payload, "name"), Description = GetString(payload, "description", ""), Color = GetColor(payload, "color", "#ffb783") });
@@ -387,13 +421,30 @@ public sealed class MainForm : Form
                 AddAutomationStep(payload);
                 return BuildState(GetEnvTarget(payload));
 
+            case "updateAutomationStep":
+                UpdateAutomationStep(payload);
+                return BuildState(GetEnvTarget(payload));
+
+            case "reorderAutomationSteps":
+                ReorderAutomationSteps(payload);
+                return BuildState(GetEnvTarget(payload));
+
             case "removeAutomationStep":
                 RemoveAutomationStep(payload);
                 return BuildState(GetEnvTarget(payload));
 
             case "runAutomation":
-                await _execution.RunAutomationAsync(GetGuid(payload, "automationId"));
-                return BuildState(GetEnvTarget(payload));
+            {
+                var log = await _execution.RunAutomationAsync(GetGuid(payload, "automationId"), true, GetRunExecutionOptions());
+                PersistExecutionLogFile(log);
+                return BuildState(GetEnvTarget(payload), log);
+            }
+
+            case "prepareRunAutomation":
+                return new
+                {
+                    commands = _execution.PrepareAutomationRun(GetGuid(payload, "automationId"))
+                };
 
             case "saveSettings":
                 SaveSettings(payload);
@@ -435,12 +486,24 @@ public sealed class MainForm : Form
                 _repository.DeleteCheatSheetEntry(GetGuid(payload, "entryId"));
                 return BuildState(GetEnvTarget(payload));
 
+            case "reorderCheatSheetEntries":
+                _repository.ReorderCheatSheetEntries(GetGuid(payload, "groupId"), ReadGuidArray(payload, "entryIds"));
+                return BuildState(GetEnvTarget(payload));
+
+            case "printCheatSheet":
+                await PrintCheatSheetAsync(ReadGuidArray(payload, "groupIds"));
+                return BuildState(GetEnvTarget(payload));
+
+            case "exportCheatSheet":
+                await ExportCheatSheetAsync(GetString(payload, "format", "csv"));
+                return BuildState(GetEnvTarget(payload));
+
             default:
                 throw new InvalidOperationException($"Unknown bridge action: {action}");
         }
     }
 
-    private object BuildState(EnvironmentVariableTarget envTarget)
+    private object BuildState(EnvironmentVariableTarget envTarget, ExecutionLog? lastRun = null)
     {
         var scripts = _repository.GetScripts();
         var automations = _repository.GetAutomations();
@@ -458,8 +521,23 @@ public sealed class MainForm : Form
             environmentVariables = _environment.Get(envTarget).Take(200),
             terminal = ScriptExecutionService.DetectTerminal(),
             appVersion = GetApplicationVersion(),
-            updateInfo = _updateInfo
+            updateInfo = _updateInfo,
+            logCleanup = GetLogCleanupStatus(),
+            lastRun = lastRun is null ? null : CloneLog(lastRun, includeOutput: false)
         };
+    }
+
+    private object ChooseLogDirectory()
+    {
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = "Choose where ScriptManager should save log files",
+            UseDescriptionForTitle = true,
+            SelectedPath = GetConfiguredLogDirectory(_repository.GetSettings())
+        };
+        return dialog.ShowDialog(this) == DialogResult.OK
+            ? new { path = dialog.SelectedPath }
+            : new { path = "" };
     }
 
     private void ImportScriptsFromDialog()
@@ -468,7 +546,7 @@ public sealed class MainForm : Form
         {
             Title = "Import scripts",
             Multiselect = true,
-            Filter = "Scripts|*.ps1;*.cmd;*.bat;*.sh;*.py;*.js;*.ts;*.sql;*.txt|All files|*.*"
+            Filter = "PowerShell scripts|*.ps1"
         };
 
         if (dialog.ShowDialog(this) != DialogResult.OK)
@@ -603,6 +681,321 @@ public sealed class MainForm : Form
         }
     }
 
+    private async Task PrintCheatSheetAsync(IReadOnlyList<Guid> groupIds)
+    {
+        if (groupIds.Count == 0)
+        {
+            throw new InvalidOperationException("Select at least one Cheat Sheet group.");
+        }
+
+        var html = BuildCheatSheetPrintHtml(groupIds);
+        var (form, webView) = await CreateDocumentWebViewAsync(html, "Print Cheat Sheet", visible: true);
+        form.FormClosed += (_, _) => webView.Dispose();
+        webView.CoreWebView2.ShowPrintUI(CoreWebView2PrintDialogKind.System);
+    }
+
+    private async Task ExportCheatSheetAsync(string format)
+    {
+        var normalized = format.Trim().ToLowerInvariant();
+        if (normalized == "pdf")
+        {
+            await ExportCheatSheetPdfAsync();
+            return;
+        }
+
+        var extension = normalized == "txt-json" ? "json.txt" : normalized;
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Export Cheat Sheet",
+            Filter = normalized switch
+            {
+                "csv" => "CSV file|*.csv",
+                "txt" => "Text file|*.txt",
+                "txt-json" => "JSON text file|*.json.txt;*.txt",
+                _ => "All files|*.*"
+            },
+            FileName = $"scriptmanager-cheat-sheet-{DateTime.Now:yyyyMMdd-HHmmss}.{extension}",
+            OverwritePrompt = true
+        };
+
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        var content = normalized switch
+        {
+            "csv" => BuildCheatSheetCsv(),
+            "txt" => BuildCheatSheetText(),
+            "txt-json" => BuildCheatSheetJsonText(),
+            _ => throw new InvalidOperationException("Unsupported Cheat Sheet export format.")
+        };
+
+        await File.WriteAllTextAsync(dialog.FileName, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+    }
+
+    private async Task ExportCheatSheetPdfAsync()
+    {
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Export Cheat Sheet PDF",
+            Filter = "PDF file|*.pdf",
+            FileName = $"scriptmanager-cheat-sheet-{DateTime.Now:yyyyMMdd-HHmmss}.pdf",
+            OverwritePrompt = true
+        };
+
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        var html = BuildCheatSheetPrintHtml(null);
+        var (form, webView) = await CreateDocumentWebViewAsync(html, "Cheat Sheet PDF", visible: false);
+        try
+        {
+            var settings = webView.CoreWebView2.Environment.CreatePrintSettings();
+            settings.Orientation = CoreWebView2PrintOrientation.Portrait;
+            settings.PageWidth = 8.27;
+            settings.PageHeight = 11.69;
+            settings.MarginTop = 0.32;
+            settings.MarginRight = 0.32;
+            settings.MarginBottom = 0.32;
+            settings.MarginLeft = 0.32;
+            settings.ShouldPrintBackgrounds = true;
+            settings.ShouldPrintHeaderAndFooter = false;
+            var saved = await webView.CoreWebView2.PrintToPdfAsync(dialog.FileName, settings);
+            if (!saved)
+            {
+                throw new InvalidOperationException("PDF export failed.");
+            }
+        }
+        finally
+        {
+            webView.Dispose();
+            form.Close();
+            form.Dispose();
+        }
+    }
+
+    private async Task<(Form Form, WebView2 WebView)> CreateDocumentWebViewAsync(string html, string title, bool visible)
+    {
+        var form = new Form
+        {
+            Text = title,
+            Width = 900,
+            Height = 700,
+            StartPosition = visible ? FormStartPosition.CenterParent : FormStartPosition.Manual,
+            ShowInTaskbar = visible,
+            Opacity = visible ? 1 : 0,
+            Location = visible ? Point.Empty : new Point(-32000, -32000)
+        };
+        var webView = new WebView2 { Dock = DockStyle.Fill };
+        form.Controls.Add(webView);
+        if (visible)
+        {
+            form.Show(this);
+        }
+        else
+        {
+            form.Show();
+        }
+
+        var userData = Path.Combine(_paths.Root, "webview2-print");
+        Directory.CreateDirectory(userData);
+        var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: userData);
+        await webView.EnsureCoreWebView2Async(environment);
+
+        var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void Handler(object? sender, CoreWebView2NavigationCompletedEventArgs args)
+        {
+            webView.CoreWebView2.NavigationCompleted -= Handler;
+            completed.TrySetResult();
+        }
+
+        webView.CoreWebView2.NavigationCompleted += Handler;
+        webView.CoreWebView2.NavigateToString(html);
+        await completed.Task;
+        return (form, webView);
+    }
+
+    private string BuildCheatSheetCsv()
+    {
+        var exportedAt = DateTime.Now;
+        var builder = new StringBuilder();
+        builder.AppendLine(string.Join(',', Csv("Application"), Csv("ScriptManager"), Csv("Version"), Csv(GetApplicationVersion()), Csv("ExportedAtLocal"), Csv(exportedAt.ToString("yyyy-MM-dd HH:mm:ss"))));
+        builder.AppendLine();
+        builder.AppendLine(string.Join(',', Csv("GroupId"), Csv("GroupName"), Csv("GroupColor"), Csv("EntryId"), Csv("EntryName"), Csv("EntryDescription"), Csv("EntryColor"), Csv("Code")));
+        foreach (var (group, entries) in GetCheatSheetExportGroups(null))
+        {
+            foreach (var entry in entries.DefaultIfEmpty())
+            {
+                builder.AppendLine(string.Join(',',
+                    Csv(group.Id.ToString()),
+                    Csv(group.Name),
+                    Csv(group.Color),
+                    Csv(entry?.Id.ToString() ?? ""),
+                    Csv(entry?.Name ?? ""),
+                    Csv(entry?.Description ?? ""),
+                    Csv(entry?.Color ?? ""),
+                    Csv(entry?.Code ?? "")));
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    private string BuildCheatSheetText()
+    {
+        var exportedAt = DateTime.Now;
+        var builder = new StringBuilder();
+        builder.AppendLine($"ScriptManager {GetApplicationVersion()} | Cheat Sheet export | {exportedAt:yyyy-MM-dd HH:mm:ss}");
+        foreach (var (group, entries) in GetCheatSheetExportGroups(null))
+        {
+            var line = new string('=', 96);
+            var title = $" {group.Name} ";
+            var left = Math.Max(0, ( 96 - title.Length ) / 2);
+            var right = Math.Max(0, 96 - left - title.Length);
+            builder.AppendLine();
+            builder.AppendLine();
+            builder.AppendLine(line);
+            builder.AppendLine($"{new string('=', left)}{title}{new string('=', right)}");
+            builder.AppendLine(line);
+            foreach (var entry in entries)
+            {
+                builder.AppendLine();
+                builder.AppendLine(entry.Name);
+                if (!string.IsNullOrWhiteSpace(entry.Description))
+                {
+                    builder.AppendLine(entry.Description);
+                }
+                builder.AppendLine(entry.Code);
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    private string BuildCheatSheetJsonText()
+    {
+        var exportedAt = DateTime.Now;
+        var value = new
+        {
+            appName = "ScriptManager",
+            appVersion = GetApplicationVersion(),
+            exportedAtLocal = exportedAt.ToString("yyyy-MM-dd HH:mm:ss"),
+            groups = GetCheatSheetExportGroups(null).Select(item => new
+            {
+                item.Group.Id,
+                item.Group.Name,
+                item.Group.Color,
+                item.Group.Icon,
+                entries = item.Entries
+            })
+        };
+
+        return JsonSerializer.Serialize(value, new JsonSerializerOptions(JsonOptions) { WriteIndented = true });
+    }
+
+    private string BuildCheatSheetPrintHtml(IReadOnlyList<Guid>? groupIds)
+    {
+        var exportedAt = DateTime.Now;
+        var groups = GetCheatSheetExportGroups(groupIds).ToList();
+        var builder = new StringBuilder();
+        builder.Append($$"""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>ScriptManager Cheat Sheet</title>
+  <style>
+    @page { size: A4; margin: 10mm; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #fff; color: #172033; font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; }
+    header { display: flex; justify-content: space-between; align-items: end; border-bottom: 1px solid #cbd5e1; padding-bottom: 6px; margin-bottom: 10px; }
+    h1 { margin: 0; font-size: 18px; line-height: 1.1; color: #0b1326; }
+    .meta { color: #64748b; font-size: 9px; }
+    .group { border: 1.5px solid var(--group-color); border-radius: 8px; margin: 0 0 9px; break-inside: avoid; overflow: hidden; }
+    .group-title { display: flex; justify-content: space-between; gap: 10px; padding: 6px 8px; background: color-mix(in srgb, var(--group-color) 13%, white); border-bottom: 1px solid var(--group-color); font-weight: 800; font-size: 12px; color: #0f172a; }
+    .entries { display: grid; gap: 6px; padding: 7px; }
+    .entry { border-left: 3px solid var(--entry-color); background: #f8fafc; border-radius: 5px; padding: 6px 7px; break-inside: avoid; }
+    .entry h3 { margin: 0 0 2px; font-size: 10.5px; line-height: 1.2; color: #111827; }
+    .description { margin: 0 0 5px; color: #475569; line-height: 1.25; }
+    pre { margin: 0; padding: 6px; border: 1px solid #d8dee9; border-radius: 4px; background: #ffffff; color: #0f172a; font: 8.8px/1.28 Consolas, "Cascadia Mono", monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .empty { color: #64748b; padding: 7px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Cheat Sheet</h1>
+      <div class="meta">ScriptManager {{Html(GetApplicationVersion())}}</div>
+    </div>
+    <div class="meta">Generated {{Html(exportedAt.ToString("yyyy-MM-dd HH:mm:ss"))}}</div>
+  </header>
+""");
+
+        foreach (var (group, entries) in groups)
+        {
+            builder.Append($$"""
+  <section class="group" style="--group-color: {{Html(CssColor(group.Color, "#4fdbc8"))}}">
+    <div class="group-title">
+      <span>{{Html(group.Name)}}</span>
+      <span>{{entries.Count}} notes</span>
+    </div>
+""");
+            if (entries.Count == 0)
+            {
+                builder.AppendLine("""    <div class="empty">No notes in this group.</div>""");
+            }
+            else
+            {
+                builder.AppendLine("""    <div class="entries">""");
+                foreach (var entry in entries)
+                {
+                    builder.Append($$"""
+      <article class="entry" style="--entry-color: {{Html(CssColor(entry.Color, "#c0c1ff"))}}">
+        <h3>{{Html(entry.Name)}}</h3>
+        <p class="description">{{Html(entry.Description)}}</p>
+        <pre>{{Html(entry.Code)}}</pre>
+      </article>
+""");
+                }
+
+                builder.AppendLine("""    </div>""");
+            }
+
+            builder.AppendLine("  </section>");
+        }
+
+        builder.AppendLine("</body></html>");
+        return builder.ToString();
+    }
+
+    private IReadOnlyList<(CheatSheetGroup Group, IReadOnlyList<CheatSheetEntry> Entries)> GetCheatSheetExportGroups(IReadOnlyList<Guid>? groupIds)
+    {
+        var selected = groupIds is null || groupIds.Count == 0 ? null : groupIds.ToHashSet();
+        var entries = _repository.GetCheatSheetEntries().GroupBy(entry => entry.GroupId).ToDictionary(group => group.Key, group => (IReadOnlyList<CheatSheetEntry>)group.OrderBy(entry => entry.Order).ThenBy(entry => entry.Name).ToList());
+        return _repository.GetCheatSheetGroups()
+            .Where(group => selected is null || selected.Contains(group.Id))
+            .OrderBy(group => group.Name)
+            .Select(group => (group, entries.TryGetValue(group.Id, out var groupEntries) ? groupEntries : Array.Empty<CheatSheetEntry>()))
+            .ToList();
+    }
+
+    private static string CssColor(string? value, string fallback)
+    {
+        var color = ( value ?? "" ).Trim();
+        return color.StartsWith('#') && ( color.Length == 4 || color.Length == 7 ) ? color : fallback;
+    }
+
+    private static string Html(string? value) => WebUtility.HtmlEncode(value ?? "");
+
+    private static string Csv(string? value)
+    {
+        var text = value ?? "";
+        return "\"" + text.Replace("\"", "\"\"") + "\"";
+    }
+
     private void UpdateScript(JsonElement payload)
     {
         var script = _repository.GetScript(GetGuid(payload, "scriptId")) ?? throw new InvalidOperationException("Script not found.");
@@ -650,7 +1043,6 @@ public sealed class MainForm : Form
         else
         {
             existing.Name = config.Name;
-            existing.Description = config.Description;
             existing.WorkingDirectory = config.WorkingDirectory;
             existing.RunAsAdmin = config.RunAsAdmin;
             existing.Parameters = config.Parameters;
@@ -665,7 +1057,6 @@ public sealed class MainForm : Form
         script.Configurations.Add(new ScriptConfiguration
         {
             Name = source.Name + " copy",
-            Description = source.Description,
             WorkingDirectory = source.WorkingDirectory,
             RunAsAdmin = source.RunAsAdmin,
             Order = script.Configurations.Count,
@@ -701,6 +1092,9 @@ public sealed class MainForm : Form
             Group = group.Name,
             Icon = GetString(payload, "icon", "account_tree"),
             Color = GetColor(payload, "color", "#8083ff"),
+            RunAsAdmin = payload.TryGetProperty("runAsAdmin", out var runAsAdmin) && runAsAdmin.GetBoolean(),
+            ShowOutputAfterRun = payload.TryGetProperty("showOutputAfterRun", out var showOutput) && showOutput.GetBoolean(),
+            TryContinueEvenIfFail = payload.TryGetProperty("tryContinueEvenIfFail", out var tryContinue) && tryContinue.GetBoolean(),
             CreatedAt = DateTime.UtcNow,
             LastModifiedAt = DateTime.UtcNow
         });
@@ -713,6 +1107,18 @@ public sealed class MainForm : Form
         automation.Description = GetString(payload, "description", automation.Description);
         automation.Icon = GetString(payload, "icon", automation.Icon);
         automation.Color = GetColor(payload, "color", automation.Color);
+        if (payload.TryGetProperty("runAsAdmin", out var runAsAdmin))
+        {
+            automation.RunAsAdmin = runAsAdmin.GetBoolean();
+        }
+        if (payload.TryGetProperty("showOutputAfterRun", out var showOutput))
+        {
+            automation.ShowOutputAfterRun = showOutput.GetBoolean();
+        }
+        if (payload.TryGetProperty("tryContinueEvenIfFail", out var tryContinue))
+        {
+            automation.TryContinueEvenIfFail = tryContinue.GetBoolean();
+        }
         if (payload.TryGetProperty("groupId", out var groupValue) && Guid.TryParse(groupValue.GetString(), out var groupId))
         {
             var group = _repository.GetAutomationGroups().FirstOrDefault(x => x.Id == groupId);
@@ -749,13 +1155,42 @@ public sealed class MainForm : Form
     {
         var id = GetOptionalGuid(payload, "entryId") ?? Guid.NewGuid();
         var entry = _repository.GetCheatSheetEntry(id) ?? new CheatSheetEntry { Id = id, CreatedAt = DateTime.UtcNow };
-        entry.GroupId = GetGuid(payload, "groupId");
+        var previousGroupId = entry.GroupId;
+        var isNew = previousGroupId == Guid.Empty;
+        entry.GroupId = ResolveCheatSheetGroupId(payload);
+        if (isNew)
+        {
+            entry.Order = _repository.GetCheatSheetEntries().Count(x => x.GroupId == entry.GroupId);
+        }
         entry.Name = GetString(payload, "name", entry.Name);
         entry.Description = GetString(payload, "description", entry.Description);
         entry.Code = GetString(payload, "code", entry.Code);
         entry.Color = GetColor(payload, "color", entry.Color);
         entry.LastModifiedAt = DateTime.UtcNow;
         _repository.UpsertCheatSheetEntry(entry);
+        _repository.ReorderCheatSheetEntries(entry.GroupId, _repository.GetCheatSheetEntries().Where(x => x.GroupId == entry.GroupId).OrderBy(x => x.Order).ThenBy(x => x.Name).Select(x => x.Id).ToList());
+        if (!isNew && previousGroupId != entry.GroupId)
+        {
+            _repository.ReorderCheatSheetEntries(previousGroupId, _repository.GetCheatSheetEntries().Where(x => x.GroupId == previousGroupId).OrderBy(x => x.Order).ThenBy(x => x.Name).Select(x => x.Id).ToList());
+        }
+    }
+
+    private Guid ResolveCheatSheetGroupId(JsonElement payload)
+    {
+        var groupId = GetOptionalGuid(payload, "groupId");
+        if (groupId is not null && _repository.GetCheatSheetGroup(groupId.Value) is not null)
+        {
+            return groupId.Value;
+        }
+
+        var group = _repository.GetCheatSheetGroups().FirstOrDefault(x => x.Name.Equals("Default", StringComparison.OrdinalIgnoreCase));
+        if (group is null)
+        {
+            group = new CheatSheetGroup { Name = "Default", Color = "#4fdbc8", Icon = "book_ribbon" };
+            _repository.UpsertCheatSheetGroup(group);
+        }
+
+        return group.Id;
     }
 
     private void AddAutomationStep(JsonElement payload)
@@ -763,10 +1198,64 @@ public sealed class MainForm : Form
         var automation = _repository.GetAutomation(GetGuid(payload, "automationId")) ?? throw new InvalidOperationException("Automation not found.");
         automation.Steps.Add(new AutomationStep
         {
-            ScriptId = GetGuid(payload, "scriptId"),
-            ConfigurationId = GetGuid(payload, "configurationId"),
+            Kind = GetAutomationStepKind(payload),
+            ScriptId = GetOptionalGuid(payload, "scriptId"),
+            ConfigurationId = GetOptionalGuid(payload, "configurationId"),
+            DelayMilliseconds = GetPositiveInt(payload, "delayMilliseconds", _repository.GetSettings().DefaultDelay),
+            OutputText = GetString(payload, "outputText", ""),
+            OutputColor = GetString(payload, "outputColor", "White"),
             Order = automation.Steps.Count
         });
+        automation.LastModifiedAt = DateTime.UtcNow;
+        _repository.UpsertAutomation(automation);
+    }
+
+    private void UpdateAutomationStep(JsonElement payload)
+    {
+        var automation = _repository.GetAutomation(GetGuid(payload, "automationId")) ?? throw new InvalidOperationException("Automation not found.");
+        var order = payload.GetProperty("order").GetInt32();
+        var step = automation.Steps.FirstOrDefault(x => x.Order == order) ?? throw new InvalidOperationException("Automation step not found.");
+        step.Kind = GetAutomationStepKind(payload);
+        step.ScriptId = GetOptionalGuid(payload, "scriptId");
+        step.ConfigurationId = GetOptionalGuid(payload, "configurationId");
+        step.DelayMilliseconds = GetPositiveInt(payload, "delayMilliseconds", step.DelayMilliseconds == 0 ? _repository.GetSettings().DefaultDelay : step.DelayMilliseconds);
+        step.OutputText = GetString(payload, "outputText", step.OutputText);
+        step.OutputColor = GetString(payload, "outputColor", step.OutputColor);
+        automation.LastModifiedAt = DateTime.UtcNow;
+        _repository.UpsertAutomation(automation);
+    }
+
+    private static AutomationStepKind GetAutomationStepKind(JsonElement payload)
+    {
+        var raw = GetString(payload, "kind", "Script");
+        return Enum.TryParse<AutomationStepKind>(raw, ignoreCase: true, out var kind) ? kind : AutomationStepKind.Script;
+    }
+
+    private static int GetPositiveInt(JsonElement payload, string property, int defaultValue)
+    {
+        return payload.TryGetProperty(property, out var value) && value.TryGetInt32(out var parsed)
+            ? Math.Max(1, parsed)
+            : Math.Max(1, defaultValue);
+    }
+
+    private void ReorderAutomationSteps(JsonElement payload)
+    {
+        var automation = _repository.GetAutomation(GetGuid(payload, "automationId")) ?? throw new InvalidOperationException("Automation not found.");
+        if (!payload.TryGetProperty("orders", out var array) || array.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        var orders = array.EnumerateArray().Select(item => item.GetInt32()).ToList();
+        foreach (var step in automation.Steps)
+        {
+            var index = orders.IndexOf(step.Order);
+            if (index >= 0)
+            {
+                step.Order = index;
+            }
+        }
+
         automation.LastModifiedAt = DateTime.UtcNow;
         _repository.UpsertAutomation(automation);
     }
@@ -798,8 +1287,211 @@ public sealed class MainForm : Form
         {
             settings.StopAutomationOnFailure = stop.GetBoolean();
         }
+        if (payload.TryGetProperty("terminalCloseDelaySeconds", out var delay) && delay.TryGetInt32(out var seconds))
+        {
+            settings.TerminalCloseDelaySeconds = Math.Clamp(seconds, 0, 3600);
+        }
+        if (payload.TryGetProperty("autoCloseTerminalAfterRun", out var autoClose))
+        {
+            settings.AutoCloseTerminalAfterRun = autoClose.GetBoolean();
+        }
+        if (payload.TryGetProperty("showOutputAfterRun", out var showOutput))
+        {
+            settings.ShowOutputAfterRun = showOutput.GetBoolean();
+        }
+        if (payload.TryGetProperty("shouldWaitBetweenScripts", out var waitBetween))
+        {
+            settings.ShouldWaitBetweenScripts = waitBetween.GetBoolean();
+        }
+        if (payload.TryGetProperty("waitBetweenScriptsMilliseconds", out var waitMs) && waitMs.TryGetInt32(out var milliseconds))
+        {
+            settings.WaitBetweenScriptsMilliseconds = Math.Max(1, milliseconds);
+        }
+        if (payload.TryGetProperty("confirmationBetweenScripts", out var confirmation))
+        {
+            settings.ConfirmationBetweenScripts = confirmation.GetBoolean();
+        }
+        if (payload.TryGetProperty("defaultDelay", out var defaultDelay) && defaultDelay.TryGetInt32(out var defaultDelayMs))
+        {
+            settings.DefaultDelay = Math.Max(1, defaultDelayMs);
+        }
+        settings.LogDirectory = GetString(payload, "logDirectory", settings.LogDirectory);
+        if (payload.TryGetProperty("maxLogFolderSizeMb", out var maxLogs) && maxLogs.TryGetInt32(out var maxLogMb))
+        {
+            settings.MaxLogFolderSizeMb = Math.Max(1, maxLogMb);
+        }
         _repository.SaveSettings(settings);
         ApplyWindowTheme(settings.Theme);
+    }
+
+    private RunExecutionOptions GetRunExecutionOptions()
+    {
+        var settings = _repository.GetSettings();
+        return new RunExecutionOptions(
+            settings.AutoCloseTerminalAfterRun,
+            Math.Clamp(settings.TerminalCloseDelaySeconds, 0, 3600),
+            settings.ShouldWaitBetweenScripts,
+            Math.Max(1, settings.WaitBetweenScriptsMilliseconds),
+            settings.ConfirmationBetweenScripts,
+            GetConfiguredLogDirectory(settings));
+    }
+
+    private void PersistExecutionLogFile(ExecutionLog log)
+    {
+        try
+        {
+            var directory = GetConfiguredLogDirectory(_repository.GetSettings());
+            Directory.CreateDirectory(directory);
+            var fileName = $"{log.StartedAt:yyyyMMdd-HHmmss}-{log.Type}-{SanitizeFileName(log.Name)}-{log.Id:N}.txt";
+            var builder = new StringBuilder();
+            builder.AppendLine($"ScriptManager log {log.Id}");
+            builder.AppendLine($"Type: {log.Type}");
+            builder.AppendLine($"Name: {log.Name}");
+            builder.AppendLine($"Result: {log.Result}");
+            builder.AppendLine($"Started: {log.StartedAt:O}");
+            builder.AppendLine($"Finished: {log.FinishedAt:O}");
+            builder.AppendLine($"ExitCode: {log.ExitCode}");
+            builder.AppendLine($"Command: {log.CommandLine}");
+            builder.AppendLine(new string('=', 80));
+            builder.AppendLine(log.TerminalOutput ?? "");
+            File.WriteAllText(Path.Combine(directory, fileName), builder.ToString(), Encoding.UTF8);
+        }
+        catch
+        {
+            // File log persistence should never break the actual script run flow.
+        }
+    }
+
+    private string GetConfiguredLogDirectory(AppSettings settings)
+    {
+        return string.IsNullOrWhiteSpace(settings.LogDirectory) ? _paths.Logs : settings.LogDirectory.Trim();
+    }
+
+    private static string SanitizeFileName(string value)
+    {
+        var invalid = Path.GetInvalidFileNameChars().ToHashSet();
+        var sanitized = new string((value ?? "log").Select(ch => invalid.Contains(ch) ? '_' : ch).ToArray()).Trim();
+        return string.IsNullOrWhiteSpace(sanitized) ? "log" : sanitized;
+    }
+
+    private void QueueStartupLogCleanup()
+    {
+        if (_startupLogCleanupQueued)
+        {
+            return;
+        }
+
+        _startupLogCleanupQueued = true;
+        _ = Task.Run(() => RunLogCleanupIfNeededAsync(LogCleanupTrigger.Startup));
+    }
+
+    private async void MainFormClosing(object? sender, FormClosingEventArgs e)
+    {
+        if (_closingAfterLogCleanup)
+        {
+            SaveWindowPlacement();
+            return;
+        }
+
+        e.Cancel = true;
+        SaveWindowPlacement();
+        await RunLogCleanupIfNeededAsync(LogCleanupTrigger.Shutdown);
+        _closingAfterLogCleanup = true;
+        Close();
+    }
+
+    private async Task RunLogCleanupIfNeededAsync(LogCleanupTrigger trigger)
+    {
+        var settings = _repository.GetSettings();
+        var directory = GetConfiguredLogDirectory(settings);
+        var maxBytes = Math.Max(1, settings.MaxLogFolderSizeMb) * 1024L * 1024L;
+        var threshold = trigger == LogCleanupTrigger.Startup ? (long)Math.Ceiling(maxBytes * 1.10) : maxBytes;
+        var targetBytes = (long)Math.Floor(maxBytes * 0.90);
+        Directory.CreateDirectory(directory);
+        var currentBytes = GetDirectorySize(directory);
+        if (currentBytes <= threshold)
+        {
+            SetLogCleanupStatus(LogCleanupStatus.Idle());
+            return;
+        }
+
+        SetLogCleanupStatus(new LogCleanupStatus(true, settings.MaxLogFolderSizeMb, BytesToMb(currentBytes), BytesToMb(targetBytes), directory, "Cleaning"));
+        try
+        {
+            while (currentBytes > targetBytes)
+            {
+                var files = Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
+                    .Select(path => new FileInfo(path))
+                    .Where(file => file.Exists)
+                    .OrderBy(file => file.LastWriteTimeUtc)
+                    .ToList();
+                if (files.Count == 0)
+                {
+                    break;
+                }
+
+                var oldest = files[0].LastWriteTimeUtc;
+                foreach (var file in files.Where(file => file.LastWriteTimeUtc == oldest))
+                {
+                    try
+                    {
+                        file.Delete();
+                    }
+                    catch
+                    {
+                        // Keep cleaning other files even when one file is locked.
+                    }
+                }
+
+                currentBytes = GetDirectorySize(directory);
+                SetLogCleanupStatus(new LogCleanupStatus(true, settings.MaxLogFolderSizeMb, BytesToMb(currentBytes), BytesToMb(targetBytes), directory, "Cleaning"));
+                await Task.Delay(150);
+            }
+        }
+        finally
+        {
+            SetLogCleanupStatus(LogCleanupStatus.Idle());
+        }
+    }
+
+    private static long GetDirectorySize(string directory)
+    {
+        if (!Directory.Exists(directory))
+        {
+            return 0;
+        }
+
+        return Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
+            .Select(path =>
+            {
+                try
+                {
+                    return new FileInfo(path).Length;
+                }
+                catch
+                {
+                    return 0L;
+                }
+            })
+            .Sum();
+    }
+
+    private static double BytesToMb(long bytes) => Math.Round(bytes / 1024d / 1024d, 2);
+
+    private LogCleanupStatus GetLogCleanupStatus()
+    {
+        lock (_logCleanupLock)
+        {
+            return _logCleanupStatus;
+        }
+    }
+
+    private void SetLogCleanupStatus(LogCleanupStatus status)
+    {
+        lock (_logCleanupLock)
+        {
+            _logCleanupStatus = status;
+        }
     }
 
     private void ApplyWindowTheme(string theme)
@@ -960,6 +1652,24 @@ public sealed class MainForm : Form
     }
 
     private sealed record BridgeRequest(string Id, string Action, JsonElement Payload);
+
+    private enum LogCleanupTrigger
+    {
+        Startup,
+        Shutdown
+    }
+
+    private sealed record LogCleanupStatus(
+        bool IsRunning,
+        int LimitMb,
+        double CurrentMb,
+        double TargetMb,
+        string Directory,
+        string Message)
+    {
+        public static LogCleanupStatus Idle() => new(false, 0, 0, 0, "", "");
+    }
+
     private sealed record UpdateInfo(string Status, string? LatestVersion, string? InstallerUrl, DateTime? CheckedAt, string? Message)
     {
         public static UpdateInfo NoInfo(string? message) => new("NOINFO", null, null, DateTime.UtcNow, message);

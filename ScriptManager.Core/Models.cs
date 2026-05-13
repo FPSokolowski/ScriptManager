@@ -56,7 +56,6 @@ public sealed class ScriptConfiguration
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public string Name { get; set; } = "Default";
-    public string Description { get; set; } = "";
     public string WorkingDirectory { get; set; } = "";
     public bool RunAsAdmin { get; set; }
     public int Order { get; set; }
@@ -87,6 +86,9 @@ public sealed class AutomationRecord
     public string Description { get; set; } = "";
     public string Icon { get; set; } = "flow";
     public string Color { get; set; } = "#8083ff";
+    public bool RunAsAdmin { get; set; }
+    public bool ShowOutputAfterRun { get; set; }
+    public bool TryContinueEvenIfFail { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime LastModifiedAt { get; set; } = DateTime.UtcNow;
     public List<AutomationStep> Steps { get; set; } = [];
@@ -105,6 +107,7 @@ public sealed class CheatSheetEntry
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid GroupId { get; set; }
+    public int Order { get; set; }
     public string Code { get; set; } = "";
     public string Name { get; set; } = "";
     public string Description { get; set; } = "";
@@ -115,9 +118,21 @@ public sealed class CheatSheetEntry
 
 public sealed class AutomationStep
 {
-    public Guid ScriptId { get; set; }
-    public Guid ConfigurationId { get; set; }
+    public AutomationStepKind Kind { get; set; } = AutomationStepKind.Script;
+    public Guid? ScriptId { get; set; }
+    public Guid? ConfigurationId { get; set; }
     public int Order { get; set; }
+    public int DelayMilliseconds { get; set; }
+    public string OutputText { get; set; } = "";
+    public string OutputColor { get; set; } = "White";
+}
+
+public enum AutomationStepKind
+{
+    Script,
+    Delay,
+    ContinueConfirmation,
+    CustomOutput
 }
 
 public sealed class ExecutionLog
@@ -154,6 +169,15 @@ public sealed class AppSettings
     public string DefaultTerminal { get; set; } = "Auto";
     public bool OpenTerminalWindow { get; set; }
     public bool StopAutomationOnFailure { get; set; } = true;
+    public bool AutoCloseTerminalAfterRun { get; set; } = true;
+    public int TerminalCloseDelaySeconds { get; set; } = 30;
+    public bool ShowOutputAfterRun { get; set; } = true;
+    public bool ShouldWaitBetweenScripts { get; set; }
+    public int WaitBetweenScriptsMilliseconds { get; set; } = 1000;
+    public bool ConfirmationBetweenScripts { get; set; }
+    public int DefaultDelay { get; set; } = 1000;
+    public string LogDirectory { get; set; } = "";
+    public int MaxLogFolderSizeMb { get; set; } = 100;
     public string SuccessExitCodesCsv { get; set; } = "0";
     public int? WindowX { get; set; }
     public int? WindowY { get; set; }
