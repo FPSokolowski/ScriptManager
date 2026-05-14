@@ -22,6 +22,18 @@ public interface IScriptRepository : IDisposable
 
     IReadOnlyList<ExecutionLog> GetLogs(int take = 500);
     void AddLog(ExecutionLog log);
+
+    IReadOnlyList<CheatSheetGroup> GetCheatSheetGroups();
+    CheatSheetGroup? GetCheatSheetGroup(Guid id);
+    void UpsertCheatSheetGroup(CheatSheetGroup group);
+    void DeleteCheatSheetGroup(Guid id);
+
+    IReadOnlyList<CheatSheetEntry> GetCheatSheetEntries();
+    CheatSheetEntry? GetCheatSheetEntry(Guid id);
+    void UpsertCheatSheetEntry(CheatSheetEntry entry);
+    void DeleteCheatSheetEntry(Guid id);
+    void ReorderCheatSheetEntries(Guid groupId, IReadOnlyList<Guid> entryIds);
+
     AppSettings GetSettings();
     void SaveSettings(AppSettings settings);
 }

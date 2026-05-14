@@ -41,6 +41,7 @@ static async Task TestImportCopiesScript()
     var source = fixture.WriteSource("hello.ps1", "Write-Output 'hello'");
     var script = fixture.Library.ImportScript(source);
     Assert(File.Exists(script.LocalPath), "local copy should exist");
+    Assert(Path.GetFileName(script.LocalPath).StartsWith(script.Id.ToString("N")), "local copy should be anchored by script id");
     Assert(script.OriginalPath == source, "source path should be stored");
     Assert(script.Configurations.Count == 1, "default configuration should be created");
     await Task.CompletedTask;
@@ -51,6 +52,7 @@ static async Task TestCreateScript()
     using var fixture = new Fixture();
     var script = fixture.Library.CreateScript("Local build", "Write-Output 'build'");
     Assert(string.IsNullOrWhiteSpace(script.OriginalPath), "local script should not have source path");
+    Assert(Path.GetFileName(script.LocalPath).StartsWith(script.Id.ToString("N")), "created script path should be anchored by script id");
     Assert(await File.ReadAllTextAsync(script.LocalPath) == "Write-Output 'build'", "content should be written");
 }
 
@@ -84,6 +86,12 @@ static async Task TestRepositoryCrud()
     var automation = new AutomationRecord { Name = "Deploy", GroupId = automationGroup.Id, Group = automationGroup.Name };
     fixture.Repository.UpsertAutomation(automation);
     Assert(fixture.Repository.GetAutomation(automation.Id)?.Name == "Deploy", "automation should persist");
+    var cheatGroup = new CheatSheetGroup { Name = "PowerShell", Color = "#38bdf8" };
+    fixture.Repository.UpsertCheatSheetGroup(cheatGroup);
+    var cheatEntry = new CheatSheetEntry { GroupId = cheatGroup.Id, Name = "Echo", Code = "Write-Output 'hello'", Color = "#f472b6" };
+    fixture.Repository.UpsertCheatSheetEntry(cheatEntry);
+    Assert(fixture.Repository.GetCheatSheetGroup(cheatGroup.Id)?.Color == "#38bdf8", "cheat sheet group should persist");
+    Assert(fixture.Repository.GetCheatSheetEntry(cheatEntry.Id)?.Code.Contains("hello") == true, "cheat sheet entry should persist");
     var settings = fixture.Repository.GetSettings();
     settings.Theme = "Light";
     settings.WindowX = 120;
